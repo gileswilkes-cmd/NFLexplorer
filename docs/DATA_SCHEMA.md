@@ -210,7 +210,7 @@ era-adjusted comparisons (Phase 2).
   },
   "baselines": {                     // per position group, qualified players only
     "QB": {
-      "qualifier": "pass_att >= 150",   // human-readable inclusion rule
+      "qualifier": "pass_att >= 224",   // human-readable inclusion rule
       "n": 34,                          // players meeting it
       "stats": {
         "pass_yds": {

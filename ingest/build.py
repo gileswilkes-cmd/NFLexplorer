@@ -51,12 +51,41 @@ OFF_POSITION_GROUPS = {"QB": "QB", "RB": "RB", "FB": "RB", "WR": "WR", "TE": "TE
 POSITION_GROUPS = {**OFF_POSITION_GROUPS, **DEF_POSITION_GROUPS}
 
 # Baseline inclusion rules per group: (stat key, minimum), REG season only.
+# QB minimum is 224 attempts (14 games x 16) so the pool is full-season
+# starters, not part-season backups.
 QUALIFIERS = {
-    "QB": ("pass_att", 150), "RB": ("rush_att", 100),
+    "QB": ("pass_att", 224), "RB": ("rush_att", 100),
     "WR": ("targets", 50), "TE": ("targets", 30), "K": ("fg_att", 15),
     "DL": ("snaps", 200), "LB": ("snaps", 200), "DB": ("snaps", 200),
 }
 MIN_BASELINE_N = 8  # don't publish a grid computed from fewer players
+
+# Canonical stat set per position group, applied to BOTH baseline computation
+# and player percentiles. Players still STORE incidental out-of-position
+# counting stats (a WR's tackle after an interception), but no baseline or
+# percentile is ever computed from out-of-position noise.
+_PASSING = {"pass_att", "pass_cmp", "pass_yds", "pass_td", "pass_int",
+            "sacks", "sack_yds", "pass_air_yds", "pass_yac"}
+_RUSHING = {"rush_att", "rush_yds", "rush_td", "rush_fumbles"}
+_RECEIVING = {"targets", "rec", "rec_yds", "rec_td", "rec_air_yds", "rec_yac",
+              "target_share", "air_yds_share"}
+_USAGE = {"snaps", "snap_share"}
+_DEFENSE = {"tackles", "tackles_solo", "tfl", "def_sacks", "qb_hits",
+            "def_int", "pass_defended", "ff", "fr", "def_td"}
+_KICKING = {"fg_att", "fg_made", "fg_long", "xp_att", "xp_made"}
+POSITION_STAT_SETS = {
+    "QB": _PASSING | _RUSHING | _USAGE | {"epa_per_play", "cpoe", "adot"},
+    "RB": _RUSHING | _RECEIVING | _USAGE | {"epa_per_play", "adot", "yac_oe"},
+    "WR": _RECEIVING | _RUSHING | _USAGE | {"epa_per_play", "adot", "yac_oe"},
+    "TE": _RECEIVING | _USAGE | {"epa_per_play", "adot", "yac_oe"},
+    "K": _KICKING,
+    "DL": _DEFENSE | _USAGE, "LB": _DEFENSE | _USAGE, "DB": _DEFENSE | _USAGE,
+}
+# Rates/derived values: a qualified player without the key is skipped. Every
+# other (counting) key is a real zero for a qualified player and is included
+# as 0 so sparse-stat baselines (a DL's INTs) aren't inflated.
+RATE_STATS = {"snap_share", "target_share", "air_yds_share",
+              "epa_per_play", "cpoe", "adot", "yac_oe"}
 
 # weekly-data column -> schema stat key (counting stats summed per season)
 WEEKLY_STAT_MAP = {
@@ -159,7 +188,12 @@ def fetch_weekly(year: int) -> pd.DataFrame:
             if e.code != 404:
                 raise
             df = pd.read_parquet(NEW_WEEKLY_URL.format(year=year))
-            return df.rename(columns=NEW_WEEKLY_RENAMES)
+            df = df.rename(columns=NEW_WEEKLY_RENAMES)
+            # Legacy stores sack yardage as magnitude; the new format stores
+            # yards LOST (negative). Audited 2026-07: this is the only used
+            # column whose sign convention differs.
+            df["sack_yards"] = df["sack_yards"].abs()
+            return df
 
     return _cached(f"weekly_{year}", load)
 
@@ -336,30 +370,46 @@ def _aggregate_pbp_advanced(acc: SeasonAccumulator, pbp: pd.DataFrame) -> None:
 def _aggregate_pbp_events(acc: SeasonAccumulator, pbp: pd.DataFrame, by_gid: dict, by_team_sched: dict) -> None:
     """Defensive, kicking, and return counting stats from PBP events."""
 
-    def add(pid, week, game_id, stat, val, team, opp, home, game_type):
-        gtype = _norm_type(game_type)
+    def resolve_team(pid, gtype, posteam, defteam):
+        """The player's own team, from weekly/roster data — NEVER from which
+        side of the ball a play was recorded on. (A QB tackling after his own
+        interception appears in defensive event columns; posteam/defteam
+        attribution would credit him to the opponent.)"""
+        for key in ((pid, gtype), (pid, "REG"), (pid, "POST")):
+            tp = acc.teams.get(key)
+            if tp:
+                if posteam in tp and defteam not in tp:
+                    return posteam
+                if defteam in tp and posteam not in tp:
+                    return defteam
+                return max(tp, key=tp.get)
+        rteam = acc.roster.get(pid, {}).get("team")
+        if rteam in (posteam, defteam):
+            return rteam
+        return defteam  # last resort: most PBP events are defensive
+
+    def add(pid, week, game_id, stat, val, posteam, defteam, season_type):
+        gtype = _norm_type(season_type)
         key = (pid, gtype)
         acc.stats[key][stat] += val
         acc.games[key].add(("wk", week))  # same key form as weekly, no double count
-        if team:
-            acc.teams[key][team] = acc.teams[key].get(team, 0) + 0  # presence only
-        meta = {"game_type": game_type, "date": by_gid.get(game_id), "team": team,
-                "opp": opp, "home": home}
+        team = resolve_team(pid, gtype, posteam, defteam)
+        opp = defteam if team == posteam else posteam
+        sched = by_team_sched.get((week, team), {})
+        meta = {"game_type": sched.get("game_type", season_type),
+                "date": by_gid.get(game_id), "team": team,
+                "opp": opp, "home": sched.get("home")}
         _add_log(acc, pid, week, meta, {stat: val})
 
-    def run(mask, id_cols, stat, weight=1.0, team_side="defteam"):
+    def run(mask, id_cols, stat, weight=1.0):
         sub = pbp[mask] if mask is not None else pbp
         for c in id_cols:
             if c not in sub.columns:
                 continue
             s = sub[sub[c].notna()]
             for r in s[[c] + ["game_id", "week", "posteam", "defteam", "season_type"]].itertuples(index=False):
-                pid = r[0]
-                team = getattr(r, team_side)
-                opp = r.defteam if team_side == "posteam" else r.posteam
-                sched = by_team_sched.get((int(r.week), team), {})
-                add(pid, int(r.week), r.game_id, stat, weight, team, opp,
-                    sched.get("home"), sched.get("game_type", r.season_type))
+                add(r[0], int(r.week), r.game_id, stat, weight,
+                    r.posteam, r.defteam, r.season_type)
 
     # Defence
     run(None, ["solo_tackle_1_player_id", "solo_tackle_2_player_id"], "tackles_solo")
@@ -373,27 +423,20 @@ def _aggregate_pbp_events(acc: SeasonAccumulator, pbp: pd.DataFrame, by_gid: dic
     run(None, ["interception_player_id"], "def_int")
     run(None, ["pass_defense_1_player_id", "pass_defense_2_player_id"], "pass_defended")
     run(None, ["forced_fumble_player_1_player_id", "forced_fumble_player_2_player_id"], "ff")
-    # fr = takeaway recoveries only: recovering your own team's fumble is not a
-    # defensive stat (and mis-attributes the player's team). Team comes from the
-    # recovery-team column, since either side can recover.
+    # fr = takeaway recoveries only: recovering your own team's fumble is not
+    # a defensive stat.
     for n in ("1", "2"):
         pcol, tcol = f"fumble_recovery_{n}_player_id", f"fumble_recovery_{n}_team"
         if pcol not in pbp.columns or "fumbled_1_team" not in pbp.columns:
             continue
-        s = pbp[pbp[pcol].notna() & pbp["fumbled_1_team"].notna()
-                & (pbp[tcol] != pbp["fumbled_1_team"])]
-        for r in s[[pcol, tcol, "game_id", "week", "posteam", "defteam", "season_type"]].itertuples(index=False):
-            team = r[1]
-            opp = r.defteam if team == r.posteam else r.posteam
-            sched = by_team_sched.get((int(r.week), team), {})
-            add(r[0], int(r.week), r.game_id, "fr", 1, team, opp,
-                sched.get("home"), sched.get("game_type", r.season_type))
+        run(pbp[pcol].notna() & pbp["fumbled_1_team"].notna()
+            & (pbp[tcol] != pbp["fumbled_1_team"]), [pcol], "fr")
     run((pbp.return_touchdown == 1) & ((pbp.interception == 1) | (pbp.fumble == 1)),
         ["td_player_id"], "def_td")
     # Kicking
     fg = pbp.field_goal_result.notna()
-    run(fg, ["kicker_player_id"], "fg_att", team_side="posteam")
-    run(fg & (pbp.field_goal_result == "made"), ["kicker_player_id"], "fg_made", team_side="posteam")
+    run(fg, ["kicker_player_id"], "fg_att")
+    run(fg & (pbp.field_goal_result == "made"), ["kicker_player_id"], "fg_made")
     made = pbp[fg & (pbp.field_goal_result == "made") & pbp.kicker_player_id.notna()]
     for pid, g in made.groupby("kicker_player_id"):
         for gtype in ("REG", "POST"):
@@ -402,25 +445,22 @@ def _aggregate_pbp_events(acc: SeasonAccumulator, pbp: pd.DataFrame, by_gid: dic
                 key = (pid, gtype)
                 acc.stats[key]["fg_long"] = max(acc.stats[key].get("fg_long", 0), float(gg.kick_distance.max()))
     xp = pbp.extra_point_result.notna()
-    run(xp, ["kicker_player_id"], "xp_att", team_side="posteam")
-    run(xp & (pbp.extra_point_result == "good"), ["kicker_player_id"], "xp_made", team_side="posteam")
-    # Returns. nflverse convention: on kickoffs posteam is the RECEIVING team,
-    # on punts posteam is the punting team (returner is on defteam).
-    run(pbp.punt_returner_player_id.notna(), ["punt_returner_player_id"], "punt_ret", team_side="defteam")
-    run(pbp.kickoff_returner_player_id.notna(), ["kickoff_returner_player_id"], "kick_ret", team_side="posteam")
-    for mask_col, prefix, ret_side in (("punt_returner_player_id", "punt_ret", "defteam"),
-                                       ("kickoff_returner_player_id", "kick_ret", "posteam")):
+    run(xp, ["kicker_player_id"], "xp_att")
+    run(xp & (pbp.extra_point_result == "good"), ["kicker_player_id"], "xp_made")
+    # Returns (team resolution is roster-derived, so posteam/defteam
+    # conventions on kickoffs vs punts don't matter here)
+    run(pbp.punt_returner_player_id.notna(), ["punt_returner_player_id"], "punt_ret")
+    run(pbp.kickoff_returner_player_id.notna(), ["kickoff_returner_player_id"], "kick_ret")
+    for mask_col, prefix in (("punt_returner_player_id", "punt_ret"),
+                             ("kickoff_returner_player_id", "kick_ret")):
         s = pbp[pbp[mask_col].notna()]
         for r in s[[mask_col, "return_yards", "return_touchdown", "game_id", "week", "posteam", "defteam", "season_type"]].itertuples(index=False):
-            pid = r[0]
-            team = getattr(r, ret_side)
-            opp = r.posteam if ret_side == "defteam" else r.defteam
-            sched = by_team_sched.get((int(r.week), team), {})
-            gt = sched.get("game_type", r.season_type)
             if r.return_yards and not pd.isna(r.return_yards):
-                add(pid, int(r.week), r.game_id, f"{prefix}_yds", float(r.return_yards), team, opp, sched.get("home"), gt)
+                add(r[0], int(r.week), r.game_id, f"{prefix}_yds", float(r.return_yards),
+                    r.posteam, r.defteam, r.season_type)
             if r.return_touchdown == 1:
-                add(pid, int(r.week), r.game_id, f"{prefix}_td", 1, team, opp, sched.get("home"), gt)
+                add(r[0], int(r.week), r.game_id, f"{prefix}_td", 1,
+                    r.posteam, r.defteam, r.season_type)
 
 
 def _aggregate_snaps(acc: SeasonAccumulator) -> None:
@@ -630,9 +670,15 @@ def build_season_aggregates(accs: dict[int, SeasonAccumulator]) -> dict:
             if len(qualified) < MIN_BASELINE_N:
                 continue
             stats_bl = {}
-            keys = set().union(*(q.keys() for q in qualified))
-            for k in sorted(keys):
-                vals = np.array([q[k] for q in qualified if k in q], dtype=float)
+            for k in sorted(POSITION_STAT_SETS[grp]):
+                if k in RATE_STATS:
+                    # rates: only players the rate exists for
+                    vals = np.array([q[k] for q in qualified if k in q], dtype=float)
+                else:
+                    # counting stats: a qualified player without the key has a
+                    # real zero — include it, or sparse stats (a DL's INTs)
+                    # get baselined only against players who recorded one
+                    vals = np.array([q.get(k, 0) for q in qualified], dtype=float)
                 if len(vals) < MIN_BASELINE_N:
                     continue
                 grid = np.percentile(vals, PERCENTILE_GRID)
@@ -684,9 +730,16 @@ def _apply_percentiles(row: dict, baselines_for_year: dict) -> None:
     for k, v in (row.get("advanced") or {}).items():
         if k != "ngs" and v is not None:
             flat[k] = v
+    # Sub-qualifier seasons (Mahomes 2017: 1 game) get no percentiles — a
+    # 35-attempt season measured against full-season starters is noise. {}
+    # here matches how POST rows behave.
+    qkey, qmin = QUALIFIERS[grp]
+    if flat.get(qkey, 0) < qmin:
+        return
+    allowed = POSITION_STAT_SETS[grp]
     pct = {}
     for k, v in flat.items():
-        if k in bl["stats"]:
+        if k in allowed and k in bl["stats"]:
             pct[k] = round(percentile_from_grid(float(v), bl["stats"][k]["p"], k), 1)
     row["percentiles"] = pct
 
