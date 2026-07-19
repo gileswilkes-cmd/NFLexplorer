@@ -111,7 +111,7 @@ career totals, and game logs.
       "teams": ["KC"],               // all teams (mid-season trades)
       "pos": "QB",                   // position that season
       "games": 16,
-      "game_type": "REG",            // season rows aggregate regular season only
+      "game_type": "REG",            // "REG" or "POST" — see "Playoff aggregation" below
       "stats": { /* stat dictionary keys, e.g. */
         "pass_att": 581, "pass_yds": 3928, "pass_td": 26, "pass_int": 11,
         "snaps": 1108, "snap_share": 0.98
@@ -126,15 +126,22 @@ career totals, and game logs.
         }
       },
       "percentiles": {               // 0–100 vs same-position qualifiers that season;
-        "pass_yds": 88, "epa_per_play": 91   // computed against seasons/{year}.json
+        "pass_yds": 88, "epa_per_play": 91   // method: see "Percentiles" below
       }
     }
   ],
 
-  "career": {                        // sums/weighted rates across built seasons (REG)
+  "career": {                        // regular season only, across built seasons
     "games": 128,
-    "stats": { "pass_att": 4523, "pass_yds": 35104, "pass_td": 261 }
+    "stats": { "pass_att": 4523, "pass_cmp": 2934, "pass_yds": 35104, "pass_td": 261 },
+    "advanced": {                    // pooled from raw plays — see "Career blocks"
+      "epa_per_play": 0.13, "n_plays": 4980,
+      "cpoe": 2.1, "n_att": 4523,
+      "adot": 7.2,
+      "yac_oe": 0.4
+    }
   },
+  "career_post": { /* same shape as career; omitted if no playoff games */ },
 
   "game_logs": [                     // one row per game, ascending (season, week)
     {
@@ -150,6 +157,39 @@ career totals, and game logs.
 `percentiles` is reserved and may be an empty object `{}` until Phase 1 wires
 up the baseline computation — the shape is fixed now so the UI can build
 against it.
+
+### Career blocks
+
+- **`career.stats` must contain every counting key that appears in any of the
+  player's season rows** — otherwise career ratios (completion %, Y/A, catch
+  rate, …) are underivable. Ratios themselves are not stored at career level;
+  clients derive them from the counting keys.
+- **`career.advanced` is pooled over raw plays, never averaged over seasons.**
+  Career EPA/play = `sum(epa) / sum(plays)` across every built play for the
+  player; likewise CPOE over attempts, aDOT as `sum(air_yds) / sum(att)`. Each
+  rate is stored alongside the denominator it was pooled over (`n_plays`,
+  `n_att`) so consumers can audit or re-derive. Re-weighting season values
+  client-side is an approximation — the build has the play-by-play, so it
+  computes the exact figure.
+- **Career NGS is intentionally omitted in v1.** NGS metrics arrive as
+  season-level aggregates (not play-level), so any career figure would be a
+  soft weighted average. NGS displays at season granularity only. This is a
+  decision, not a gap.
+
+### Playoff aggregation
+
+Playoff production is aggregated at build time even though the UI may surface
+it later — the games are in hand and losing the data is the expensive mistake.
+
+- **Season rows:** up to two rows per season, distinguished by `game_type`:
+  a `"REG"` row always, plus a `"POST"` row (same shape) only for seasons in
+  which the player appeared in a playoff game.
+- **Career:** `career` remains regular-season only. A parallel `career_post`
+  (identical shape, including pooled `advanced`) is present only if the player
+  has any playoff games — code paths that only care about the regular season
+  never see it.
+- `game_logs` continues to hold all games, tagged `REG` / `WC` / `DIV` /
+  `CON` / `SB`; the `POST` season row aggregates the non-`REG` types.
 
 ---
 
@@ -183,14 +223,50 @@ era-adjusted comparisons (Phase 2).
       }
     },
     "RB": { /* same shape, rushing/receiving keys */ },
-    "WR": {}, "TE": {}, "DEF": {}, "K": {}
+    "WR": {}, "TE": {}, "K": {},
+    "DL": {}, "LB": {}, "DB": {}    // defence is three groups, never one
   }
 }
 ```
 
-The percentile grid is always the same seven points
-(`p5, p10, p25, p50, p75, p90, p95`) so the client can interpolate a player's
-percentile from `p` + `mean`/`std` without per-stat special cases.
+### Defensive baseline groups
+
+Defence is **never** a single baseline population — a cornerback's INTs and a
+defensive tackle's are different distributions, and a merged percentile is
+misleading. Roster positions map to three groups:
+
+| Group | Roster positions | Character |
+|---|---|---|
+| `DL` | DE, DT, NT, EDGE | pass rush / run stop |
+| `LB` | ILB, OLB, MLB, LB | second level |
+| `DB` | CB, S, FS, SS, DB | coverage |
+
+Known coarse edge (accepted for v1): nflverse positions blur edge rushers
+across DL/OLB, so some 3-4 OLBs land in `LB` while playing a `DL`-shaped role.
+
+### Percentiles — one method, one direction convention
+
+There is exactly **one** percentile method, used identically by the build step
+(pre-computed season-row `percentiles`, Phase 1) and by any client-side
+computation (era-adjusted comparisons, Phase 2) — otherwise a profile badge
+would disagree with the same player's standing in a comparison view.
+
+- **Method: empirical linear interpolation on the stored 7-point grid**
+  `p = [p5, p10, p25, p50, p75, p90, p95]`. No z-scores for badges — the
+  grid handles skewed counting stats (TDs, sacks) far better. `mean`/`std`
+  stay in the file for *context display only* ("1.2 SD above average").
+- **Tail rule: clamp to the grid edges.** Values below p5 report 5 and render
+  as `<5`; above p95 report 95 and render as `95+`. No fake precision at the
+  extremes.
+- **Direction:** higher is not always better. Stats in the `negative_stats`
+  set (see stat dictionary) are inverted — `pct = 100 − raw_pct` — so a low
+  interception count reads as a *good* percentile.
+- The reference implementation is `percentile_from_grid()` in
+  `ingest/build.py`; a TypeScript port for Phase 2 must match it
+  case-for-case.
+
+**Build ordering:** all `seasons/{year}.json` baselines are computed **before**
+any player files, because season-row percentiles are computed against them.
 
 ---
 
@@ -211,6 +287,18 @@ floats (shares are 0–1 fractions, not percentages).
 | Returns | `punt_ret`, `punt_ret_yds`, `punt_ret_td`, `kick_ret`, `kick_ret_yds`, `kick_ret_td` |
 | Advanced (PBP-derived, all seasons) | `epa_per_play`, `cpoe`, `adot`, `yac_oe` |
 | Advanced (NGS, 2016+, under `advanced.ngs`) | `avg_time_to_throw`, `avg_completed_air_yds`, `avg_intended_air_yds`, `avg_separation`, `avg_cushion`, `efficiency`, `avg_speed` |
+
+**Direction (`negative_stats`).** These keys are *bad when high*; the
+percentile function inverts them (`pct = 100 − raw_pct`) so badges read
+correctly:
+
+```
+pass_int, sacks, sack_yds, rush_fumbles
+```
+
+Every other key is neutral-or-good when high. Any new key added later must be
+classified at the same time. The canonical set lives as `NEGATIVE_STATS` in
+`ingest/build.py`.
 
 New keys may be **added** within schema v1; existing keys are never renamed or
 re-typed without a version bump.
