@@ -14,7 +14,12 @@ function rank(name: string, q: string): number {
   return -1;
 }
 
-export default function PlayerSearch({ autoFocus = false }: { autoFocus?: boolean }) {
+export default function PlayerSearch({ autoFocus = false, onSelect, placeholder }: {
+  autoFocus?: boolean;
+  /** when provided, rows call back instead of navigating to the profile */
+  onSelect?: (p: IndexEntry) => void;
+  placeholder?: string;
+}) {
   const [players, setPlayers] = useState<IndexEntry[] | null>(indexCache);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
@@ -55,9 +60,18 @@ export default function PlayerSearch({ autoFocus = false }: { autoFocus?: boolea
       e.preventDefault();
       setHighlight((h) => Math.max(h - 1, 0));
     } else if (e.key === "Enter" && results[highlight]) {
-      const el = listRef.current?.querySelectorAll("a")[highlight];
-      el?.click();
+      if (onSelect) {
+        pick(results[highlight]);
+      } else {
+        const el = listRef.current?.querySelectorAll("a")[highlight];
+        el?.click();
+      }
     }
+  }
+
+  function pick(p: IndexEntry) {
+    setQuery("");
+    onSelect?.(p);
   }
 
   return (
@@ -68,7 +82,7 @@ export default function PlayerSearch({ autoFocus = false }: { autoFocus?: boolea
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={players ? "Search players…" : "Loading player index…"}
+        placeholder={players ? placeholder ?? "Search players…" : "Loading player index…"}
         disabled={!players}
         aria-label="Search players"
         className="w-full rounded-lg border border-hairline bg-surface px-4 py-3 text-base outline-none focus:border-ink-muted"
@@ -78,29 +92,39 @@ export default function PlayerSearch({ autoFocus = false }: { autoFocus?: boolea
           {results.length === 0 && (
             <li className="px-4 py-3 text-sm text-ink-muted">No players match “{query.trim()}”.</li>
           )}
-          {results.map((p, i) => (
-            <li key={p.id} className={i === highlight ? "bg-hairline/40" : undefined}>
-              <Link
-                href={`/players/${p.id}`}
-                className="flex items-center gap-3 px-4 py-2 hover:bg-hairline/40"
-                onMouseEnter={() => setHighlight(i)}
-              >
+          {results.map((p, i) => {
+            const rowContent = (
+              <>
                 {p.headshot ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={p.headshot} alt="" className="h-8 w-8 shrink-0 rounded-full object-cover" loading="lazy" />
                 ) : (
                   <span className="h-8 w-8 shrink-0 rounded-full bg-hairline" />
                 )}
-                <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                <span className="min-w-0 flex-1 truncate text-left">{p.name}</span>
                 <span className="shrink-0 text-sm text-ink-secondary">
                   {p.pos ?? "—"}{p.team ? ` · ${p.team}` : ""}
                 </span>
                 <span className="shrink-0 text-xs text-ink-muted tabular">
                   {p.first_season === p.last_season ? p.first_season : `${p.first_season}–${p.last_season}`}
                 </span>
-              </Link>
-            </li>
-          ))}
+              </>
+            );
+            const rowClass = "flex w-full items-center gap-3 px-4 py-2 hover:bg-hairline/40";
+            return (
+              <li key={p.id} className={i === highlight ? "bg-hairline/40" : undefined}>
+                {onSelect ? (
+                  <button type="button" className={rowClass} onClick={() => pick(p)} onMouseEnter={() => setHighlight(i)}>
+                    {rowContent}
+                  </button>
+                ) : (
+                  <Link href={`/players/${p.id}`} className={rowClass} onMouseEnter={() => setHighlight(i)}>
+                    {rowContent}
+                  </Link>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

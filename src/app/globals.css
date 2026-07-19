@@ -17,6 +17,9 @@
   --pct-lo-1: #fbeceb;
   --pct-lo-2: #f8d7d6;
   --pct-lo-3: #f2b3b2;
+  /* categorical series (dataviz palette slots 1-2) */
+  --series-1: #2a78d6;
+  --series-2: #008300;
 }
 
 @theme inline {
@@ -46,6 +49,8 @@
     --pct-lo-1: #47201f;
     --pct-lo-2: #672d2c;
     --pct-lo-3: #8f3a39;
+    --series-1: #3987e5;
+    --series-2: #008300;
   }
 }
 

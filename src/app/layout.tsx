@@ -29,8 +29,9 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <header className="border-b border-hairline">
-          <div className="mx-auto flex w-full max-w-5xl items-center px-6 py-3">
+          <div className="mx-auto flex w-full max-w-5xl items-center gap-6 px-6 py-3">
             <a href="/" className="font-semibold tracking-tight">NFL Explorer</a>
+            <a href="/compare" className="text-sm text-ink-secondary hover:text-foreground">Compare</a>
           </div>
         </header>
         {children}

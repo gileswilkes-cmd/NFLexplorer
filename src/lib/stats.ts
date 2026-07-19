@@ -165,6 +165,17 @@ export function formatValue(col: Column, v: number): string {
   return (col.fmt ?? int)(v);
 }
 
+const ALL_COLUMNS = new Map<string, Column>();
+for (const cols of [...Object.values(SEASON_COLUMNS), DEFENSE_COLUMNS]) {
+  for (const c of cols) if (!ALL_COLUMNS.has(c.key)) ALL_COLUMNS.set(c.key, c);
+}
+ALL_COLUMNS.set("games", { key: "games", label: "G", title: "Games played" });
+
+/** Column definition (label/format) for any stat key, from any group's set. */
+export function columnFor(key: string): Column {
+  return ALL_COLUMNS.get(key) ?? { key, label: key };
+}
+
 export function formatHeight(inches: number | null): string | null {
   if (!inches) return null;
   return `${Math.floor(inches / 12)}'${inches % 12}"`;

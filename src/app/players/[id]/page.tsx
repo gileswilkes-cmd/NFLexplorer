@@ -7,25 +7,12 @@ import {
   Column, SEASON_COLUMNS, flatten, formatHeight, formatValue,
   logColumns, ngsIsNull, posGroup,
 } from "@/lib/stats";
-import { formatPercentile, percentileTier } from "@/lib/percentile";
+import { formatPercentile } from "@/lib/percentile";
+import PctBadge from "@/components/PctBadge";
 
 // values that legitimately have no zero-fill: absence renders as "–"
 const DASH_KEYS = new Set(["snap_share", "target_share", "air_yds_share",
   "epa_per_play", "cpoe", "adot", "yac_oe"]);
-
-function PctBadge({ pct, label }: { pct: number; label: string }) {
-  const tier = percentileTier(pct);
-  const varName = tier === 0 ? "--pct-mid" : tier > 0 ? `--pct-hi-${tier}` : `--pct-lo-${-tier}`;
-  return (
-    <span
-      className="tabular ml-1 inline-block min-w-[2em] rounded px-1 text-center text-[10px] leading-4 font-medium align-middle"
-      style={{ background: `var(${varName})` }}
-      title={label}
-    >
-      {formatPercentile(pct)}
-    </span>
-  );
-}
 
 function Cell({ col, row, source, group }: {
   col: Column; row: SeasonRow | CareerBlock; source: Record<string, number>; group: string;
@@ -224,6 +211,9 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
                 : "Undrafted",
             ].filter(Boolean).join(" · ")}
           </p>
+          <Link href={`/compare?a=${doc.id}`} className="mt-1 inline-block text-sm underline decoration-hairline underline-offset-4 hover:decoration-inherit">
+            Compare with another player →
+          </Link>
         </div>
       </header>
 
