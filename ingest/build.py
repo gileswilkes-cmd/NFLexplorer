@@ -44,7 +44,7 @@ PERCENTILE_GRID = (5, 10, 25, 50, 75, 90, 95)
 DEF_POSITION_GROUPS = {
     "DE": "DL", "DT": "DL", "NT": "DL", "EDGE": "DL", "DL": "DL",
     "ILB": "LB", "OLB": "LB", "MLB": "LB", "LB": "LB",
-    "CB": "DB", "S": "DB", "FS": "DB", "SS": "DB", "DB": "DB",
+    "CB": "DB", "S": "DB", "FS": "DB", "SS": "DB", "SAF": "DB", "DB": "DB",
 }
 
 OFF_POSITION_GROUPS = {"QB": "QB", "RB": "RB", "FB": "RB", "WR": "WR", "TE": "TE", "K": "K"}
@@ -855,6 +855,8 @@ def build_player_files(accs: dict[int, SeasonAccumulator], all_baselines: dict,
                   f"({len(season_rows)} REG + {len(post_rows)} POST seasons, {len(game_logs)} logs)")
 
         all_rows = season_rows + post_rows
+        if not _qualifies_for_index(all_rows):
+            continue  # file written above; just no search-index entry
         first_season = min(r["season"] for r in all_rows)
         last_season = max(r["season"] for r in all_rows)
         latest = max(all_rows, key=lambda r: (r["season"], r["game_type"] == "REG"))
@@ -865,6 +867,25 @@ def build_player_files(accs: dict[int, SeasonAccumulator], all_baselines: dict,
             "headshot": profile["headshot"],
         })
     return index_entries, failed
+
+
+def _qualifies_for_index(all_rows: list[dict]) -> bool:
+    """Appearance filter for the search index only — player FILES are written
+    for everyone and stay reachable by direct URL. An entry requires at least
+    one season clearing a real statistical threshold; punters, snap-only
+    players (OL), and one-game cameos don't clutter search results.
+    """
+    for r in all_rows:
+        s = r["stats"]
+        if (s.get("pass_att", 0) >= 50 or s.get("rush_att", 0) >= 20
+                or s.get("targets", 0) >= 20):
+            return True
+        if s.get("fg_att", 0) >= 5:
+            return True
+        if (position_group(r["pos"] or "") in ("DL", "LB", "DB")
+                and s.get("snaps", 0) >= 200):
+            return True
+    return False
 
 
 def build_player_index(index_entries: list[dict]) -> Path:

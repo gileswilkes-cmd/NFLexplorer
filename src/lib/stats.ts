@@ -9,7 +9,7 @@ export type PosGroup = "QB" | "RB" | "WR" | "TE" | "K" | "DL" | "LB" | "DB" | "O
 const DEF_GROUPS: Record<string, PosGroup> = {
   DE: "DL", DT: "DL", NT: "DL", EDGE: "DL", DL: "DL",
   ILB: "LB", OLB: "LB", MLB: "LB", LB: "LB",
-  CB: "DB", S: "DB", FS: "DB", SS: "DB", DB: "DB",
+  CB: "DB", S: "DB", FS: "DB", SS: "DB", SAF: "DB", DB: "DB",
 };
 
 export function posGroup(pos: string | null | undefined): PosGroup {
