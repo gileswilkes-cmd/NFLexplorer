@@ -779,16 +779,20 @@ def _career_block(season_rows: list[dict], pools_by_season: list[dict], pos_late
 
 
 def build_player_files(accs: dict[int, SeasonAccumulator], all_baselines: dict,
-                       player_ids: list[str]) -> list[Path]:
-    """Write players/{id}.json for the given ids. Baselines must already exist."""
+                       player_ids: list[str], verbose: bool = True):
+    """Write players/{id}.json for the given ids. Baselines must already exist.
+
+    Returns (index_entries, failed_ids) — index entries feed players/index.json.
+    """
     players = fetch_players()
     players = players.set_index("gsis_id")
-    written = []
+    index_entries, failed = [], []
+    last_built_season = max(accs)
     for pid in player_ids:
         try:
             ident = players.loc[pid]
         except KeyError:
-            print(f"  !! {pid}: not in players master, skipping")
+            failed.append((pid, "not in players master"))
             continue
         if isinstance(ident, pd.DataFrame):
             ident = ident.iloc[0]
@@ -817,7 +821,7 @@ def build_player_files(accs: dict[int, SeasonAccumulator], all_baselines: dict,
                     game_logs.append(log)
 
         if not season_rows and not post_rows:
-            print(f"  !! {pid}: no data in window, skipping")
+            failed.append((pid, "no data in window"))
             continue
 
         draft = None
@@ -846,10 +850,29 @@ def build_player_files(accs: dict[int, SeasonAccumulator], all_baselines: dict,
         doc["game_logs"] = game_logs
         path = DATA_DIR / "players" / f"{pid}.json"
         write_json(path, doc)
-        written.append(path)
-        print(f"  wrote {path.relative_to(REPO_ROOT)} "
-              f"({len(season_rows)} REG + {len(post_rows)} POST seasons, {len(game_logs)} logs)")
-    return written
+        if verbose:
+            print(f"  wrote {path.relative_to(REPO_ROOT)} "
+                  f"({len(season_rows)} REG + {len(post_rows)} POST seasons, {len(game_logs)} logs)")
+
+        all_rows = season_rows + post_rows
+        first_season = min(r["season"] for r in all_rows)
+        last_season = max(r["season"] for r in all_rows)
+        latest = max(all_rows, key=lambda r: (r["season"], r["game_type"] == "REG"))
+        index_entries.append({
+            "id": pid, "name": profile["name"], "pos": pos_latest or None,
+            "team": latest["team"], "first_season": first_season,
+            "last_season": last_season, "active": last_season == last_built_season,
+            "headshot": profile["headshot"],
+        })
+    return index_entries, failed
+
+
+def build_player_index(index_entries: list[dict]) -> Path:
+    """Write players/index.json — the eagerly-loaded search index."""
+    entries = sorted(index_entries, key=lambda e: e["name"])
+    path = DATA_DIR / "players" / "index.json"
+    write_json(path, {"schema_version": SCHEMA_VERSION, "players": entries})
+    return path
 
 
 def build_team_files(accs, seasons) -> None:
@@ -885,14 +908,31 @@ def build(seasons: list[int], sample: bool, players_filter: list[str]) -> None:
     # Order matters: baselines first — player-file percentiles depend on them.
     all_baselines = build_season_aggregates(accs)
 
+    full_run = not (players_filter or sample)
     if players_filter:
         ids = players_filter
     elif sample:
         ids = resolve_sample_ids()
     else:
-        ids = sorted({pid for acc in accs.values() for (pid, _t) in acc.stats
-                      if not isinstance(pid, tuple)})
-    build_player_files(accs, all_baselines, ids)
+        ids = sorted({pid for acc in accs.values()
+                      for src in (acc.stats, acc.pools, acc.games)
+                      for (pid, _t) in src
+                      if isinstance(pid, str)})
+    index_entries, failed = build_player_files(accs, all_baselines, ids,
+                                               verbose=not full_run)
+    if full_run:
+        # a partial build would produce a misleadingly small index
+        idx_path = build_player_index(index_entries)
+        print(f"  wrote {idx_path.relative_to(REPO_ROOT)} "
+              f"({len(index_entries)} players, {idx_path.stat().st_size / 1024:.0f} KB)")
+    if failed:
+        reasons = defaultdict(int)
+        for _pid, why in failed:
+            reasons[why] += 1
+        print(f"  {len(failed)} players failed to build: "
+              + ", ".join(f"{why} x{n}" for why, n in reasons.items()))
+        for pid, why in failed[:10]:
+            print(f"    e.g. {pid}: {why}")
     build_team_files(accs, seasons)
 
     # meta.json: merge seasons with any existing build so a partial refresh

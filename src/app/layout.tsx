@@ -27,7 +27,14 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <header className="border-b border-hairline">
+          <div className="mx-auto flex w-full max-w-5xl items-center px-6 py-3">
+            <a href="/" className="font-semibold tracking-tight">NFL Explorer</a>
+          </div>
+        </header>
+        {children}
+      </body>
     </html>
   );
 }
