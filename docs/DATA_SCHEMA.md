@@ -237,9 +237,12 @@ misleading. Roster positions map to three groups:
 
 | Group | Roster positions | Character |
 |---|---|---|
-| `DL` | DE, DT, NT, EDGE | pass rush / run stop |
+| `DL` | DE, DT, NT, EDGE, DL | pass rush / run stop |
 | `LB` | ILB, OLB, MLB, LB | second level |
 | `DB` | CB, S, FS, SS, DB | coverage |
+
+(Recent nflverse rosters use the coarse codes `DL`/`LB`/`DB` directly; older
+seasons use the fine-grained ones. Both map.)
 
 Known coarse edge (accepted for v1): nflverse positions blur edge rushers
 across DL/OLB, so some 3-4 OLBs land in `LB` while playing a `DL`-shaped role.

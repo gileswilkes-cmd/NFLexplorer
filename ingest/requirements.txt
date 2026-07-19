@@ -1,2 +1,4 @@
-nfl_data_py>=0.3.2
-pandas>=1.5
+# Requires Python 3.11 — nfl_data_py pins pandas<2.0 / numpy<2.0, which have
+# no wheels for Python 3.12+. (On Windows: winget install Python.Python.3.11)
+nfl_data_py>=0.3.3
+pyarrow>=14
