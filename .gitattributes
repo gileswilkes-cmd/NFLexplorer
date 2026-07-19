@@ -1,0 +1,5 @@
+# Normalize line endings across Windows and Linux machines (and Vercel CI)
+* text=auto
+*.ico binary
+*.png binary
+*.jpg binary
