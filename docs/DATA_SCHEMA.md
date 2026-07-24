@@ -311,6 +311,12 @@ are implemented in `build.py`; this file documents shape and conventions.
 Conventions:
 - **A metric that cannot be computed honestly is `null`** (e.g. neutral pace
   with too few clean snap gaps), never a guess.
+- **`down_distance` intentionally excludes no-down plays** (two-point
+  conversion attempts — a 2pt try has no down). Cell play counts therefore sum
+  slightly below total offensive plays; that is correct, not a leak.
+- **`run_dir` normalizes over rushes with a known direction only.** Rushes with
+  missing `run_location` (~1% league-wide) are excluded; the covered share is
+  published alongside as `fingerprint.run_dir_known`.
 - **Team percentile direction:** any dotted key containing `allowed` inverts
   (lower = better). Fingerprint axes rank raw — they are style, not quality
   (a high `proe` percentile means "more pass-happy than the league").

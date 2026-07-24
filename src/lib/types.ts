@@ -81,3 +81,73 @@ export interface PlayerIndex {
   schema_version: number;
   players: IndexEntry[];
 }
+
+// --- teams (Phase 3) ---
+
+export interface EffBlock {
+  epa_per_play?: number;
+  success_rate?: number;
+  epa_per_play_allowed?: number;
+  success_rate_allowed?: number;
+  plays_per_game?: number;
+  plays?: number;
+  games?: number;
+}
+
+/** down×distance cell; empty cells have plays: 0 and no EPA keys */
+export type DDCell = EffBlock & { plays: number };
+
+export interface TeamSeason {
+  season: number;
+  code: string;
+  games: number;
+  record: { w: number; l: number; t: number } | null;
+  offense: {
+    summary: Record<string, number>;
+    by_play_type: { pass: EffBlock; rush: EffBlock };
+    fingerprint: {
+      proe: number | null;
+      early_down_pass_rate: number | null;
+      neutral_pace_sec: number | null;
+      shotgun_rate: number | null;
+      adot: number | null;
+      run_dir: { left: number; middle: number; right: number } | null;
+      run_dir_known: number | null;
+    };
+    scheme_splits: {
+      shotgun_vs_under_center: { shotgun: EffBlock; under_center: EffBlock };
+      early_down_pass_vs_run: { pass: EffBlock; rush: EffBlock };
+      pass_heavy_vs_balanced: { pass_heavy: EffBlock; balanced: EffBlock };
+      deep_shots: EffBlock & { rate: number | null; attempts: number };
+    };
+    down_distance: Record<string, DDCell>;
+  };
+  defense: {
+    summary: Record<string, number>;
+    by_play_type: { pass: EffBlock; rush: EffBlock };
+    explosive_rate_allowed: number | null;
+    sack_rate: number | null;
+    down_distance: Record<string, DDCell>;
+  };
+  percentiles: { offense: Record<string, number>; defense: Record<string, number> };
+}
+
+export interface TeamDoc {
+  schema_version: number;
+  franchise: string;
+  name: string;
+  colors: { primary: string; secondary: string } | null;
+  seasons: TeamSeason[];
+}
+
+export interface TeamIndexEntry {
+  franchise: string;
+  name: string;
+  colors: { primary: string; secondary: string } | null;
+  latest: { season: number; record: { w: number; l: number; t: number } | null };
+}
+
+export interface TeamIndex {
+  schema_version: number;
+  teams: TeamIndexEntry[];
+}

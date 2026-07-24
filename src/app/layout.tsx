@@ -32,6 +32,7 @@ export default function RootLayout({
           <div className="mx-auto flex w-full max-w-5xl items-center gap-6 px-6 py-3">
             <a href="/" className="font-semibold tracking-tight">NFL Explorer</a>
             <a href="/compare" className="text-sm text-ink-secondary hover:text-foreground">Compare</a>
+            <a href="/teams" className="text-sm text-ink-secondary hover:text-foreground">Teams</a>
           </div>
         </header>
         {children}

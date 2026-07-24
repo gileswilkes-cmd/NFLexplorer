@@ -1053,6 +1053,9 @@ def _team_season_metrics(year: int) -> dict[str, dict]:
             "shotgun_rate": _f(off.shotgun.mean()),
             "adot": round(float(atts.air_yards.mean()), 1) if len(atts) else None,
             "run_dir": {k: _f((rd.run_location == k).sum() / rd_n) for k in ("left", "middle", "right")} if rd_n else None,
+            # share of rushes with a known direction — run_dir normalizes over
+            # these only (league-wide ~99%; documented exclusion)
+            "run_dir_known": _f(rd_n / int((off["rush"] == 1).sum())) if (off["rush"] == 1).any() else None,
         }
 
         # scheme cross-tabs
@@ -1180,6 +1183,9 @@ def build_team_files(seasons: list[int], franchises: list[str] | None,
             print(f"  sample pick [{role}]: {fr} ({sample_year} PROE {proe}, "
                   f"EPA/play allowed {epa_a})")
         franchises = sorted(set(picks.values()))
+    if franchises == ["all"]:
+        franchises = sorted({FRANCHISE_MAP.get(c, c)
+                             for year in per_year for c in per_year[year]})
     if franchises is None:
         return []
     written = []
@@ -1201,9 +1207,19 @@ def build_team_files(seasons: list[int], franchises: list[str] | None,
                "colors": colors, "seasons": rows}
         path = DATA_DIR / "teams" / f"{fr}.json"
         write_json(path, doc)
-        written.append(path)
+        written.append((fr, doc))
         print(f"  wrote {path.relative_to(REPO_ROOT)} ({len(rows)} seasons)")
-    return written
+
+    if len(written) > 8:  # full-run: emit the teams index for /teams
+        entries = []
+        for fr, doc in sorted(written):
+            last = doc["seasons"][-1]
+            entries.append({"franchise": fr, "name": doc["name"], "colors": doc["colors"],
+                            "latest": {"season": last["season"], "record": last["record"]}})
+        ipath = DATA_DIR / "teams" / "index.json"
+        write_json(ipath, {"schema_version": SCHEMA_VERSION, "teams": entries})
+        print(f"  wrote {ipath.relative_to(REPO_ROOT)} ({len(entries)} franchises)")
+    return [p for p, _ in written]
 
 
 def select_sample_franchises(per_year_metrics: dict[str, dict]) -> dict[str, str]:
