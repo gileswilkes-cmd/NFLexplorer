@@ -896,8 +896,328 @@ def build_player_index(index_entries: list[dict]) -> Path:
     return path
 
 
-def build_team_files(accs, seasons) -> None:
-    """Phase 3: write teams/index.json and teams/{abbr}.json."""
+# --- Phase 3a: team data layer ------------------------------------------------
+# Metric definitions: docs/PHASE3A_TEAMS_SPEC.md. Do not improvise them.
+
+FRANCHISE_MAP = {"OAK": "LV", "SD": "LAC", "STL": "LA"}  # relocations in window
+# Franchise -> (legacy code, first season at the new home). nflfastR PBP
+# retroactively uses CURRENT codes for all seasons; schedules keep era codes.
+# We key everything by current code and derive the era code per season row.
+RELOCATIONS = {"LV": ("OAK", 2020), "LAC": ("SD", 2017), "LA": ("STL", 2016)}
+
+
+def era_code(franchise: str, season: int) -> str:
+    legacy = RELOCATIONS.get(franchise)
+    return legacy[0] if legacy and season < legacy[1] else franchise
+
+# Rankable team metrics (dotted paths into the season block). Direction rule:
+# any key containing "allowed" inverts (lower = better = higher percentile).
+# Fingerprint axes rank raw — they are style, not quality (a high PROE
+# percentile means "more pass-happy than the league", not "better").
+TEAM_RANKABLE_OFF = [
+    "summary.points_per_game", "summary.yds_per_game", "summary.plays_per_game",
+    "summary.epa_per_play", "summary.success_rate",
+    "by_play_type.pass.epa_per_play", "by_play_type.rush.epa_per_play",
+    "fingerprint.proe", "fingerprint.early_down_pass_rate",
+    "fingerprint.neutral_pace_sec", "fingerprint.shotgun_rate", "fingerprint.adot",
+    "scheme_splits.deep_shots.rate",
+]
+TEAM_RANKABLE_DEF = [
+    "summary.points_allowed_per_game", "summary.yds_allowed_per_game",
+    "summary.epa_per_play_allowed", "summary.success_rate_allowed",
+    "by_play_type.pass.epa_per_play_allowed", "by_play_type.rush.epa_per_play_allowed",
+    "explosive_rate_allowed", "sack_rate",
+]
+
+
+def team_stat_is_negative(key: str) -> bool:
+    return "allowed" in key
+
+
+def team_percentile(value: float, p: list[float], key: str) -> float:
+    """Team wrapper over the one canonical percentile function."""
+    pct = percentile_from_grid(value, p, "__team__")  # never in NEGATIVE_STATS
+    return 100.0 - pct if team_stat_is_negative(key) else pct
+
+
+def fetch_team_desc() -> pd.DataFrame:
+    import nfl_data_py as ndp
+    return _cached("team_desc", ndp.import_team_desc)
+
+
+def _dig(d: dict, dotted: str):
+    cur = d
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _eff(sub: pd.DataFrame, allowed: bool = False, games: int | None = None) -> dict:
+    """EPA/play + success rate (+ plays_per_game) for a set of plays."""
+    suffix = "_allowed" if allowed else ""
+    out = {}
+    n = len(sub)
+    if n:
+        out[f"epa_per_play{suffix}"] = _f(sub.epa.mean())
+        out[f"success_rate{suffix}"] = _f((sub.epa > 0).mean())
+    if games:
+        out["plays_per_game"] = _f(n / games)
+    return out
+
+
+def _neutral_pace(team_neutral: pd.DataFrame, comp: pd.DataFrame) -> float | None:
+    """Mean seconds between consecutive offensive snaps, neutral filter,
+    excluding snaps that follow clock-stopping events. The spec flags this as
+    the fiddliest axis: the guards here are (same game, same drive, previous
+    play kept the clock moving, gap in a sane 5-45s window)."""
+    if team_neutral.empty:
+        return None
+    # order of the full competitive frame preserves play order within game
+    comp = comp.sort_values(["game_id", "fixed_drive", "game_seconds_remaining"],
+                            ascending=[True, True, False])
+    prev = comp.shift(1)
+    same_ctx = (comp.game_id == prev.game_id) & (comp.fixed_drive == prev.fixed_drive) \
+        & (comp.posteam == prev.posteam)
+    clock_ran = (prev.incomplete_pass != 1) & (prev.out_of_bounds != 1) \
+        & (prev.timeout != 1) & (prev.penalty != 1)
+    gap = prev.game_seconds_remaining - comp.game_seconds_remaining
+    ok = same_ctx & clock_ran & gap.between(5, 45) & comp.index.isin(team_neutral.index)
+    vals = gap[ok]
+    return round(float(vals.mean()), 1) if len(vals) >= 50 else None
+
+
+def _down_distance(sub: pd.DataFrame, allowed: bool) -> dict:
+    out = {}
+    dd = sub[sub.down.notna()]
+    buckets = [("short", dd.ydstogo <= 3), ("medium", dd.ydstogo.between(4, 6)),
+               ("long", dd.ydstogo >= 7)]
+    for down in (1, 2, 3, 4):
+        for bname, bmask in buckets:
+            cell = dd[(dd.down == down) & bmask]
+            entry = _eff(cell, allowed)
+            entry["plays"] = len(cell)
+            out[f"{down}_{bname}"] = entry
+    return out
+
+
+def _team_season_metrics(year: int) -> dict[str, dict]:
+    """One season block (spec shape, minus percentiles) per team code."""
+    pbp = fetch_pbp(year)
+    reg = pbp[pbp.season_type == "REG"]
+    plays = reg[((reg["pass"] == 1) | (reg["rush"] == 1)) & (reg.play_type != "no_play")]
+    comp = plays[(plays.qb_kneel != 1) & (plays.qb_spike != 1)]
+    neutral = comp[(comp.wp >= 0.2) & (comp.wp <= 0.8) & (comp.half_seconds_remaining > 120)]
+    del pbp
+
+    sched = fetch_schedules(year)
+    sreg = sched[(sched.game_type == "REG") & sched.home_score.notna()].copy()
+    # schedules use era codes (STL/SD/OAK); PBP uses current codes — normalize
+    sreg["home_team"] = sreg.home_team.replace(FRANCHISE_MAP)
+    sreg["away_team"] = sreg.away_team.replace(FRANCHISE_MAP)
+
+    out = {}
+    for code in sorted(comp.posteam.dropna().unique()):
+        off = comp[comp.posteam == code]
+        dfn = comp[comp.defteam == code]
+        noff = neutral[neutral.posteam == code]
+        home = sreg[sreg.home_team == code]
+        away = sreg[sreg.away_team == code]
+        games = len(home) + len(away)
+        if games == 0 or off.empty:
+            continue
+        pf = home.home_score.sum() + away.away_score.sum()
+        pa = home.away_score.sum() + away.home_score.sum()
+        w = int((home.home_score > home.away_score).sum() + (away.away_score > away.home_score).sum())
+        t = int((home.home_score == home.away_score).sum() + (away.away_score == away.home_score).sum())
+
+        offense: dict = {"summary": {
+            "points_per_game": _f(pf / games),
+            "yds_per_game": _f(off.yards_gained.sum() / games),
+            **_eff(off, games=games),
+        }}
+        offense["by_play_type"] = {
+            "pass": _eff(off[off["pass"] == 1], games=games),
+            "rush": _eff(off[off["rush"] == 1], games=games),
+        }
+
+        # fingerprint (neutral filter for tendency/tempo; competitive elsewhere)
+        atts = off[(off.pass_attempt == 1) & off.air_yards.notna()]
+        rd = off[(off["rush"] == 1) & off.run_location.isin(["left", "middle", "right"])]
+        rd_n = len(rd)
+        offense["fingerprint"] = {
+            "proe": _f(noff["pass"].mean() - noff.xpass.mean()) if len(noff) else None,
+            "early_down_pass_rate": _f(noff[noff.down.isin([1, 2])]["pass"].mean()) if len(noff) else None,
+            "neutral_pace_sec": _neutral_pace(noff, comp),
+            "shotgun_rate": _f(off.shotgun.mean()),
+            "adot": round(float(atts.air_yards.mean()), 1) if len(atts) else None,
+            "run_dir": {k: _f((rd.run_location == k).sum() / rd_n) for k in ("left", "middle", "right")} if rd_n else None,
+        }
+
+        # scheme cross-tabs
+        gun = off[off.shotgun == 1]
+        uc = off[off.shotgun != 1]
+        ed = off[off.down.isin([1, 2])]
+        deep = atts[atts.air_yards >= 20]
+        # pass_heavy_vs_balanced: game-level buckets by neutral pass rate
+        # (games with <10 neutral plays fall back to competitive pass rate)
+        rates = []
+        for gid, g in off.groupby("game_id"):
+            ng = noff[noff.game_id == gid]
+            rates.append((gid, float(ng["pass"].mean()) if len(ng) >= 10 else float(g["pass"].mean())))
+        rates.sort(key=lambda x: -x[1])
+        n_heavy = max(1, -(-len(rates) // 3))  # top third, ceil
+        heavy_ids = {gid for gid, _ in rates[:n_heavy]}
+        heavy = off[off.game_id.isin(heavy_ids)]
+        balanced = off[~off.game_id.isin(heavy_ids)]
+        offense["scheme_splits"] = {
+            "shotgun_vs_under_center": {
+                "shotgun": {**_eff(gun), "plays": len(gun)},
+                "under_center": {**_eff(uc), "plays": len(uc)},
+            },
+            "early_down_pass_vs_run": {
+                "pass": {**_eff(ed[ed["pass"] == 1]), "plays": int((ed["pass"] == 1).sum())},
+                "rush": {**_eff(ed[ed["rush"] == 1]), "plays": int((ed["rush"] == 1).sum())},
+            },
+            "pass_heavy_vs_balanced": {
+                "pass_heavy": {**_eff(heavy), "games": len(heavy_ids)},
+                "balanced": {**_eff(balanced), "games": len(rates) - len(heavy_ids)},
+            },
+            "deep_shots": {
+                "rate": _f(len(deep) / len(atts)) if len(atts) else None,
+                **_eff(deep), "attempts": len(deep),
+            },
+        }
+        offense["down_distance"] = _down_distance(off, allowed=False)
+
+        opp_dropbacks = int((dfn.qb_dropback == 1).sum())
+        defense = {
+            "summary": {
+                "points_allowed_per_game": _f(pa / games),
+                "yds_allowed_per_game": _f(dfn.yards_gained.sum() / games),
+                **_eff(dfn, allowed=True),
+            },
+            "by_play_type": {
+                "pass": _eff(dfn[dfn["pass"] == 1], allowed=True),
+                "rush": _eff(dfn[dfn["rush"] == 1], allowed=True),
+            },
+            "explosive_rate_allowed": _f((dfn.yards_gained >= 20).mean()),
+            "sack_rate": _f(int(dfn.sack.sum()) / opp_dropbacks) if opp_dropbacks else None,
+            "down_distance": _down_distance(dfn, allowed=True),
+        }
+
+        out[code] = {
+            "season": year, "code": era_code(code, year), "games": games,
+            "record": {"w": w, "l": games - w - t, "t": t},
+            "offense": offense, "defense": defense,
+        }
+    return out
+
+
+def _team_baselines(season_metrics: dict[str, dict]) -> dict:
+    """7-point grids over the 32 team values, same shape as player baselines."""
+    out = {"offense": {}, "defense": {}}
+    for side, keys in (("offense", TEAM_RANKABLE_OFF), ("defense", TEAM_RANKABLE_DEF)):
+        for key in keys:
+            vals = []
+            for block in season_metrics.values():
+                v = _dig(block[side], key)
+                if isinstance(v, (int, float)):
+                    vals.append(float(v))
+            if len(vals) < 16:  # a real league-wide metric or nothing
+                continue
+            arr = np.array(vals)
+            out[side][key] = {"mean": _f(arr.mean()), "std": _f(arr.std(ddof=0)),
+                              "p": [_f(v) for v in np.percentile(arr, PERCENTILE_GRID)]}
+    return out
+
+
+def _apply_team_percentiles(block: dict, baselines: dict) -> None:
+    pct: dict = {"offense": {}, "defense": {}}
+    for side, keys in (("offense", TEAM_RANKABLE_OFF), ("defense", TEAM_RANKABLE_DEF)):
+        for key in keys:
+            bl = baselines.get(side, {}).get(key)
+            v = _dig(block[side], key)
+            if bl and isinstance(v, (int, float)):
+                pct[side][key] = round(team_percentile(float(v), bl["p"], key), 1)
+    block["percentiles"] = pct
+
+
+def build_team_files(seasons: list[int], franchises: list[str] | None,
+                     sample: bool = False, sample_year: int = 2024) -> list[Path]:
+    """Phase 3a team stage. Computes every team's season block (needed for
+    baselines regardless), merges team_baselines into seasons/{year}.json, and
+    writes teams/{franchise}.json for the requested franchises only.
+
+    sample=True picks the franchises from the data per the 3a spec: most
+    pass-heavy + most run-heavy offence by PROE, best defence by EPA/play
+    allowed, in sample_year.
+    """
+    desc = fetch_team_desc().set_index("team_abbr")
+    per_year: dict[int, dict[str, dict]] = {}
+    for year in seasons:
+        print(f"  [teams {year}] aggregating…")
+        per_year[year] = _team_season_metrics(year)
+        baselines = _team_baselines(per_year[year])
+        # merge into the existing season file (schema addition, no bump)
+        spath = DATA_DIR / "seasons" / f"{year}.json"
+        sdoc = json.loads(spath.read_text(encoding="utf-8")) if spath.exists() else {
+            "schema_version": SCHEMA_VERSION, "season": year}
+        sdoc["team_baselines"] = baselines
+        write_json(spath, sdoc)
+        for block in per_year[year].values():
+            _apply_team_percentiles(block, baselines)
+
+    if sample:
+        picks = select_sample_franchises(per_year[sample_year])
+        for role, fr in picks.items():
+            code_year = next((b["code"] for b in per_year[sample_year].values()
+                              if FRANCHISE_MAP.get(b["code"], b["code"]) == fr), fr)
+            detail = per_year[sample_year][code_year]
+            proe = _dig(detail["offense"], "fingerprint.proe")
+            epa_a = _dig(detail["defense"], "summary.epa_per_play_allowed")
+            print(f"  sample pick [{role}]: {fr} ({sample_year} PROE {proe}, "
+                  f"EPA/play allowed {epa_a})")
+        franchises = sorted(set(picks.values()))
+    if franchises is None:
+        return []
+    written = []
+    for fr in franchises:
+        rows = []
+        for year in seasons:
+            for code, block in per_year[year].items():
+                if FRANCHISE_MAP.get(code, code) == fr:
+                    rows.append(block)
+        if not rows:
+            print(f"  !! no seasons found for franchise {fr}")
+            continue
+        rows.sort(key=lambda b: b["season"])
+        name = desc.loc[fr].team_name if fr in desc.index else fr
+        colors = None
+        if fr in desc.index:
+            colors = {"primary": desc.loc[fr].team_color, "secondary": desc.loc[fr].team_color2}
+        doc = {"schema_version": SCHEMA_VERSION, "franchise": fr, "name": name,
+               "colors": colors, "seasons": rows}
+        path = DATA_DIR / "teams" / f"{fr}.json"
+        write_json(path, doc)
+        written.append(path)
+        print(f"  wrote {path.relative_to(REPO_ROOT)} ({len(rows)} seasons)")
+    return written
+
+
+def select_sample_franchises(per_year_metrics: dict[str, dict]) -> dict[str, str]:
+    """Most pass-heavy + most run-heavy by PROE, best defence by EPA allowed."""
+    proe = {c: _dig(b["offense"], "fingerprint.proe") for c, b in per_year_metrics.items()}
+    proe = {c: v for c, v in proe.items() if v is not None}
+    epa_allowed = {c: _dig(b["defense"], "summary.epa_per_play_allowed")
+                   for c, b in per_year_metrics.items()}
+    picks = {
+        "pass_heavy": max(proe, key=proe.get),
+        "run_heavy": min(proe, key=proe.get),
+        "best_defense": min(epa_allowed, key=epa_allowed.get),
+    }
+    return {role: FRANCHISE_MAP.get(code, code) for role, code in picks.items()}
 
 
 # Inspection sample: Mahomes by id; the rest resolved by name+position.
@@ -954,7 +1274,8 @@ def build(seasons: list[int], sample: bool, players_filter: list[str]) -> None:
               + ", ".join(f"{why} x{n}" for why, n in reasons.items()))
         for pid, why in failed[:10]:
             print(f"    e.g. {pid}: {why}")
-    build_team_files(accs, seasons)
+    # Team stage (Phase 3b will hook the full 32-franchise run in here);
+    # for now teams build only via --teams / --teams-sample.
 
     # meta.json: merge seasons with any existing build so a partial refresh
     # (--seasons 2025) doesn't clobber the recorded coverage
@@ -983,11 +1304,19 @@ def main() -> None:
                         help="write player files for the inspection sample only")
     parser.add_argument("--players", nargs="+", default=[], metavar="GSIS_ID",
                         help="write player files for these ids only")
+    parser.add_argument("--teams", nargs="+", default=None, metavar="FRANCHISE",
+                        help="run ONLY the team stage for these franchise codes")
+    parser.add_argument("--teams-sample", action="store_true",
+                        help="run ONLY the team stage; pick sample franchises from the data")
     args = parser.parse_args()
 
     bad = [s for s in args.seasons if s not in ALL_SEASONS]
     if bad:
         parser.error(f"seasons outside the 2015-2025 window: {bad}")
+
+    if args.teams or args.teams_sample:
+        build_team_files(sorted(args.seasons), args.teams, sample=args.teams_sample)
+        return
 
     build(sorted(args.seasons), args.sample, args.players)
 

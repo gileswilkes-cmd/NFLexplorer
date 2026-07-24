@@ -35,8 +35,9 @@ public/data/
     index.json              search index — every player, minimal fields
     {gsis_id}.json          one file per player: profile, seasons, career, game logs
   seasons/
-    {year}.json             league-wide aggregates & percentile baselines for that season
-  teams/                    (Phase 3 — reserved, not written yet)
+    {year}.json             league aggregates, player baselines, team_baselines
+  teams/
+    {franchise}.json        one file per franchise, seasons nested (Phase 3a)
 ```
 
 ---
@@ -272,6 +273,56 @@ would disagree with the same player's standing in a comparison view.
 any player files, because season-row percentiles are computed against them.
 
 ---
+
+## `teams/{franchise}.json` — team file (Phase 3a)
+
+One file per **franchise**, keyed by the current code (`LA`, `LAC`, `LV` for the
+relocated ones); each nested season row carries `code` = the code used that
+season (`OAK`, `SD`, `STL` pre-relocation). Regular season only. Full metric
+definitions — filter regimes, PROE, success rate, pace, the four scheme
+cross-tabs, down×distance buckets — live in `docs/PHASE3A_TEAMS_SPEC.md` and
+are implemented in `build.py`; this file documents shape and conventions.
+
+```jsonc
+{
+  "schema_version": 1,
+  "franchise": "LV", "name": "Las Vegas Raiders",
+  "colors": { "primary": "#000000", "secondary": "#A5ACAF" },
+  "seasons": [{
+    "season": 2024, "code": "LV", "games": 17,
+    "record": { "w": 4, "l": 13, "t": 0 },
+    "offense": {
+      "summary":       { /* points/yds/plays per game, epa_per_play, success_rate */ },
+      "by_play_type":  { "pass": {}, "rush": {} },
+      "fingerprint":   { /* proe, early_down_pass_rate, neutral_pace_sec,
+                            shotgun_rate, adot, run_dir {left,middle,right} */ },
+      "scheme_splits": { /* shotgun_vs_under_center, early_down_pass_vs_run,
+                            pass_heavy_vs_balanced (game-level — coarser than
+                            the others by construction), deep_shots */ },
+      "down_distance": { /* "{down}_{short|medium|long}" -> epa/success/plays */ }
+    },
+    "defense": { /* results only, *_allowed keys; explosive_rate_allowed,
+                    sack_rate; same down_distance grid */ },
+    "percentiles": { "offense": { /* dotted keys */ }, "defense": {} }
+  }]
+}
+```
+
+Conventions:
+- **A metric that cannot be computed honestly is `null`** (e.g. neutral pace
+  with too few clean snap gaps), never a guess.
+- **Team percentile direction:** any dotted key containing `allowed` inverts
+  (lower = better). Fingerprint axes rank raw — they are style, not quality
+  (a high `proe` percentile means "more pass-happy than the league").
+  `neutral_pace_sec` ranks raw seconds: high percentile = slower.
+- Percentiles use the same `percentile_from_grid` contract via the
+  `team_percentile()` wrapper in `build.py`.
+
+### `team_baselines` — addition to `seasons/{year}.json`
+
+Alongside the player `baselines`: `{"offense": {dotted_key: {mean, std, p}},
+"defense": {…}}` over the 32 team values, same 7-point grid. Schema addition
+within v1 — no version bump.
 
 ## Stat dictionary (position-aware sets)
 
