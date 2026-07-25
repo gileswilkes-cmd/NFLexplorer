@@ -1255,6 +1255,308 @@ def resolve_sample_ids() -> list[str]:
     return ids
 
 
+# --- Phase 4: leaderboards ---------------------------------------------------
+# Reuses already-written players/, teams/, seasons/ JSON — no new ingest path.
+# Metric definitions and correctness rules: docs/PHASE4_SPEC.md.
+
+LEADERBOARD_WINDOW = (2015, 2025)
+LEADERBOARD_CAP = 100
+
+# Career floors: roughly 7x the season qualifier (QUALIFIERS) — a "real
+# career" within the 2015-2025 window, not a cameo. QB's 1500 is the spec's
+# own suggested figure; the rest scale from the same season minimums.
+CAREER_QUALIFIERS = {
+    "QB": ("pass_att", 1500), "RB": ("rush_att", 750),
+    "WR": ("targets", 350), "TE": ("targets", 200), "K": ("fg_att", 100),
+    "DL": ("snaps", 1500), "LB": ("snaps", 1500), "DB": ("snaps", 1500),
+}
+
+# Rate stats computed from two counting keys already stored in stats (not
+# separately stored — the schema only stores raw counts, see DATA_SCHEMA.md).
+DERIVED_STATS = {
+    "cmp_pct": ("pass_cmp", "pass_att"), "ypa": ("pass_yds", "pass_att"),
+    "ypc": ("rush_yds", "rush_att"), "ypr": ("rec_yds", "rec"),
+    "fg_pct": ("fg_made", "fg_att"),
+}
+
+STAT_LABELS = {
+    "pass_yds": "Passing yards", "pass_td": "Passing TDs", "pass_int": "Interceptions thrown",
+    "sacks": "Sacks taken", "rush_yds": "Rushing yards", "rush_td": "Rushing TDs",
+    "rush_fumbles": "Fumbles (rushing)", "rec": "Receptions", "rec_yds": "Receiving yards",
+    "rec_td": "Receiving TDs", "targets": "Targets", "fg_made": "Field goals made",
+    "fg_att": "Field goal attempts", "fg_long": "Longest field goal",
+    "tackles": "Total tackles", "def_sacks": "Sacks", "tfl": "Tackles for loss",
+    "qb_hits": "QB hits", "ff": "Forced fumbles", "def_int": "Interceptions",
+    "pass_defended": "Passes defended",
+    "epa_per_play": "EPA per play", "cpoe": "Completion % over expected",
+    "yac_oe": "YAC over expected", "adot": "Average depth of target",
+    "cmp_pct": "Completion %", "ypa": "Yards per attempt", "ypc": "Yards per carry",
+    "ypr": "Yards per reception", "fg_pct": "Field goal %",
+}
+
+# (stat key, kind) per canonical position group. kind: "counting" (raw sum,
+# no qualifier unless the stat is itself a NEGATIVE_STAT — rule 3: a "fewest"
+# board needs a volume floor or it's meaningless); "derived" (ratio of two
+# stored counting keys, ALWAYS qualified — rule 1); "rate" (a stored
+# per-play/per-attempt value, ALWAYS qualified — rule 1).
+_WR_TE_STATS = [
+    ("rec", "counting"), ("rec_yds", "counting"), ("rec_td", "counting"),
+    ("targets", "counting"), ("ypr", "derived"),
+    ("epa_per_play", "rate"), ("yac_oe", "rate"), ("adot", "rate"),
+]
+LEADERBOARD_STATS: dict[str, list[tuple[str, str]]] = {
+    "QB": [
+        ("pass_yds", "counting"), ("pass_td", "counting"), ("pass_int", "counting"),
+        ("sacks", "counting"), ("rush_yds", "counting"), ("rush_td", "counting"),
+        ("cmp_pct", "derived"), ("ypa", "derived"),
+        ("epa_per_play", "rate"), ("cpoe", "rate"),
+    ],
+    "RB": [
+        ("rush_yds", "counting"), ("rush_td", "counting"), ("rush_fumbles", "counting"),
+        ("rec", "counting"), ("rec_yds", "counting"), ("rec_td", "counting"),
+        ("ypc", "derived"), ("epa_per_play", "rate"), ("yac_oe", "rate"),
+    ],
+    "WR": _WR_TE_STATS,
+    "TE": _WR_TE_STATS,
+    "K": [
+        ("fg_made", "counting"), ("fg_att", "counting"), ("fg_long", "counting"),
+        ("fg_pct", "derived"),
+    ],
+    "DL": [
+        ("tackles", "counting"), ("def_sacks", "counting"), ("tfl", "counting"),
+        ("qb_hits", "counting"), ("ff", "counting"),
+    ],
+    "LB": [
+        ("tackles", "counting"), ("def_sacks", "counting"), ("tfl", "counting"),
+        ("def_int", "counting"), ("pass_defended", "counting"),
+    ],
+    "DB": [
+        ("def_int", "counting"), ("pass_defended", "counting"), ("tackles", "counting"),
+        ("tfl", "counting"), ("ff", "counting"),
+    ],
+}
+
+TEAM_LEADERBOARD_LABELS = {
+    "summary.points_per_game": "Points per game", "summary.yds_per_game": "Yards per game",
+    "summary.plays_per_game": "Plays per game", "summary.epa_per_play": "EPA per play",
+    "summary.success_rate": "Success rate",
+    "by_play_type.pass.epa_per_play": "Pass EPA per play",
+    "by_play_type.rush.epa_per_play": "Rush EPA per play",
+    "fingerprint.proe": "Pass rate over expected",
+    "fingerprint.early_down_pass_rate": "Early-down pass rate",
+    "fingerprint.neutral_pace_sec": "Neutral pace (seconds/snap)",
+    "fingerprint.shotgun_rate": "Shotgun rate", "fingerprint.adot": "Average depth of target",
+    "scheme_splits.deep_shots.rate": "Deep-shot rate",
+    "summary.points_allowed_per_game": "Points allowed per game",
+    "summary.yds_allowed_per_game": "Yards allowed per game",
+    "summary.epa_per_play_allowed": "EPA/play allowed",
+    "summary.success_rate_allowed": "Success rate allowed",
+    "by_play_type.pass.epa_per_play_allowed": "Pass EPA/play allowed",
+    "by_play_type.rush.epa_per_play_allowed": "Rush EPA/play allowed",
+    "explosive_rate_allowed": "Explosive-play rate allowed", "sack_rate": "Sack rate",
+}
+
+
+def _flat_for_board(block: dict) -> dict:
+    """stats + advanced (minus ngs) as one lookup map — same shape as the
+    TypeScript flatten() the player-page UI uses."""
+    out = dict(block.get("stats", {}))
+    for k, v in (block.get("advanced") or {}).items():
+        if k != "ngs" and v is not None:
+            out[k] = v
+    return out
+
+
+def _board_value(flat: dict, key: str, kind: str) -> float | int | None:
+    if kind == "derived":
+        num_k, den_k = DERIVED_STATS[key]
+        den = flat.get(den_k, 0)
+        if den <= 0:
+            return None
+        return flat.get(num_k, 0) / den
+    if kind == "rate":
+        return flat[key] if key in flat else None
+    return flat.get(key, 0)  # counting: a real zero counts
+
+
+def _needs_qualifier(stat: str, kind: str) -> bool:
+    return kind in ("derived", "rate") or stat in NEGATIVE_STATS
+
+
+def _rank_entries(entries: list[dict], negative: bool, cap: int = LEADERBOARD_CAP) -> list[dict]:
+    ordered = sorted(entries, key=lambda e: e["value"], reverse=not negative)
+    out = []
+    for i, e in enumerate(ordered[:cap], start=1):
+        e = dict(e)
+        e["value"] = round(e["value"], 4)
+        e["rank"] = i
+        out.append(e)
+    return out
+
+
+def _player_board_meta(grp: str, stat: str, kind: str, scope: str) -> dict:
+    negative = stat in NEGATIVE_STATS
+    qkey, qmin = (CAREER_QUALIFIERS if scope == "career" else QUALIFIERS)[grp]
+    return {
+        "label": STAT_LABELS.get(stat, stat),
+        "direction": "asc" if negative else "desc",
+        "qualifier": f"{qkey} >= {qmin}" if _needs_qualifier(stat, kind) else None,
+    }
+
+
+def build_leaderboards() -> None:
+    """Part 1: player leaderboards, reading already-written players/*.json.
+
+    Populates season/{year}.json boards; build_team_leaderboards() merges its
+    TEAM board into the same files afterward, and records.json/career.json
+    are written here for players, extended with TEAM by the team stage.
+    """
+    print("Building player leaderboards…")
+    files = sorted(p for p in (DATA_DIR / "players").glob("*.json") if p.name != "index.json")
+
+    season_cand: dict[int, dict[str, dict[str, list]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    career_cand: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+
+    for fp in files:
+        doc = json.loads(fp.read_text(encoding="utf-8"))
+        pid, name = doc["id"], doc["profile"]["name"]
+
+        for row in doc["seasons"]:
+            if row["game_type"] != "REG":
+                continue  # leaderboards are regular-season only, like QUALIFIERS/career
+            grp = position_group(row["pos"] or "")
+            if grp not in LEADERBOARD_STATS:
+                continue
+            flat = _flat_for_board(row)
+            qkey, qmin = QUALIFIERS[grp]
+            qualifies = flat.get(qkey, 0) >= qmin
+            for stat, kind in LEADERBOARD_STATS[grp]:
+                if _needs_qualifier(stat, kind) and not qualifies:
+                    continue
+                v = _board_value(flat, stat, kind)
+                if v is None:
+                    continue
+                season_cand[row["season"]][grp][stat].append(
+                    {"id": pid, "name": name, "team": row["team"], "season": row["season"], "value": v})
+
+        career = doc.get("career")
+        pos_latest = doc["profile"]["pos"]
+        grp_latest = position_group(pos_latest or "")
+        if career and grp_latest in LEADERBOARD_STATS:
+            flat = _flat_for_board(career)
+            qkey, qmin = CAREER_QUALIFIERS[grp_latest]
+            qualifies = flat.get(qkey, 0) >= qmin
+            team = doc["seasons"][-1]["team"] if doc["seasons"] else None
+            for stat, kind in LEADERBOARD_STATS[grp_latest]:
+                if _needs_qualifier(stat, kind) and not qualifies:
+                    continue
+                v = _board_value(flat, stat, kind)
+                if v is None:
+                    continue
+                career_cand[grp_latest][stat].append({"id": pid, "name": name, "team": team, "value": v})
+
+    def write_boards(candidates_by_grp: dict[str, dict[str, list]], scope: str, path: Path, extra: dict) -> dict:
+        boards = {}
+        for grp, stats in LEADERBOARD_STATS.items():
+            grp_boards = {}
+            for stat, kind in stats:
+                entries = candidates_by_grp.get(grp, {}).get(stat, [])
+                if not entries:
+                    continue
+                meta = _player_board_meta(grp, stat, kind, scope)
+                meta["entries"] = _rank_entries(entries, stat in NEGATIVE_STATS)
+                grp_boards[stat] = meta
+            if grp_boards:
+                boards[grp] = grp_boards
+        doc = {"schema_version": SCHEMA_VERSION, **extra, "boards": boards}
+        write_json(path, doc)
+        return doc
+
+    for year in ALL_SEASONS:
+        write_boards(season_cand.get(year, {}), "season",
+                    DATA_DIR / "leaderboards" / "season" / f"{year}.json", {"season": year})
+
+    records_pooled: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for year in ALL_SEASONS:
+        for grp, stats in season_cand.get(year, {}).items():
+            for stat, entries in stats.items():
+                records_pooled[grp][stat].extend(entries)
+    write_boards(records_pooled, "season", DATA_DIR / "leaderboards" / "records.json",
+                {"window": list(LEADERBOARD_WINDOW)})
+    write_boards(career_cand, "career", DATA_DIR / "leaderboards" / "career.json",
+                {"window": list(LEADERBOARD_WINDOW)})
+
+    n_season = sum(len(v["entries"]) for y in ALL_SEASONS
+                   for g in json.loads((DATA_DIR / "leaderboards" / "season" / f"{y}.json").read_text()).get("boards", {}).values()
+                   for v in g.values())
+    print(f"  wrote leaderboards/season/{{2015..2025}}.json ({n_season} total entries across seasons)")
+    for name in ("records.json", "career.json"):
+        p = DATA_DIR / "leaderboards" / name
+        n = sum(len(v["entries"]) for g in json.loads(p.read_text()).get("boards", {}).values() for v in g.values())
+        print(f"  wrote leaderboards/{name} ({n} entries, {p.stat().st_size / 1024:.0f} KB)")
+
+
+def build_team_leaderboards() -> None:
+    """Merges a TEAM board into the leaderboard files player boards already
+    wrote. Reuses TEAM_RANKABLE_OFF/DEF and team_stat_is_negative() from the
+    Phase 3 team stage — same metrics, same direction rule, no new ingest.
+    """
+    print("Building team leaderboards…")
+    files = sorted(p for p in (DATA_DIR / "teams").glob("*.json") if p.name != "index.json")
+    season_cand: dict[int, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    alltime_cand: dict[str, list] = defaultdict(list)
+
+    for fp in files:
+        doc = json.loads(fp.read_text(encoding="utf-8"))
+        fr, name = doc["franchise"], doc["name"]
+        for s in doc["seasons"]:
+            for side, keys in (("offense", TEAM_RANKABLE_OFF), ("defense", TEAM_RANKABLE_DEF)):
+                for key in keys:
+                    v = _dig(s[side], key)
+                    if not isinstance(v, (int, float)):
+                        continue
+                    entry = {"id": fr, "name": name, "season": s["season"], "value": v}
+                    tag = f"{side}:{key}"
+                    season_cand[s["season"]][tag].append(entry)
+                    alltime_cand[tag].append(entry)
+
+    def meta_for(tag: str) -> dict:
+        side, key = tag.split(":", 1)
+        negative = team_stat_is_negative(key)
+        return {
+            "label": TEAM_LEADERBOARD_LABELS.get(key, key), "side": side,
+            "style": key.startswith("fingerprint."),  # style axes are NOT quality — UI must not use the quality palette
+            "direction": "asc" if negative else "desc",
+        }
+
+    def team_boards(cand: dict[str, list]) -> dict:
+        boards = {}
+        for tag, entries in cand.items():
+            m = meta_for(tag)
+            m["entries"] = _rank_entries(entries, m["direction"] == "asc")
+            boards[tag] = m
+        return boards
+
+    for year in ALL_SEASONS:
+        path = DATA_DIR / "leaderboards" / "season" / f"{year}.json"
+        doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
+            {"schema_version": SCHEMA_VERSION, "season": year, "boards": {}}
+        tb = team_boards(season_cand.get(year, {}))
+        if tb:
+            doc["boards"]["TEAM"] = tb
+        write_json(path, doc)
+
+    path = DATA_DIR / "leaderboards" / "records.json"
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
+        {"schema_version": SCHEMA_VERSION, "window": list(LEADERBOARD_WINDOW), "boards": {}}
+    doc["boards"]["TEAM"] = team_boards(alltime_cand)
+    write_json(path, doc)
+
+    n = sum(len(v["entries"]) for v in doc["boards"]["TEAM"].values())
+    print(f"  merged TEAM board into season/{{year}}.json + records.json ({n} all-time entries, "
+          f"{len(doc['boards']['TEAM'])} categories)")
+
+
 # -----------------------------------------------------------------------------
 
 
@@ -1324,11 +1626,18 @@ def main() -> None:
                         help="run ONLY the team stage for these franchise codes")
     parser.add_argument("--teams-sample", action="store_true",
                         help="run ONLY the team stage; pick sample franchises from the data")
+    parser.add_argument("--leaderboards", action="store_true",
+                        help="run ONLY the leaderboard stage (reads existing players/teams/seasons JSON, no ingest)")
     args = parser.parse_args()
 
     bad = [s for s in args.seasons if s not in ALL_SEASONS]
     if bad:
         parser.error(f"seasons outside the 2015-2025 window: {bad}")
+
+    if args.leaderboards:
+        build_leaderboards()
+        build_team_leaderboards()
+        return
 
     if args.teams or args.teams_sample:
         build_team_files(sorted(args.seasons), args.teams, sample=args.teams_sample)

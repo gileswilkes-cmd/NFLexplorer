@@ -38,6 +38,10 @@ public/data/
     {year}.json             league aggregates, player baselines, team_baselines
   teams/
     {franchise}.json        one file per franchise, seasons nested (Phase 3a)
+  leaderboards/
+    season/{year}.json      that season's leaders (players + teams)
+    records.json            best single-season performances, pooled 2015-2025
+    career.json             career totals within 2015-2025 (players only)
 ```
 
 ---
@@ -329,6 +333,64 @@ Conventions:
 Alongside the player `baselines`: `{"offense": {dotted_key: {mean, std, p}},
 "defense": {…}}` over the 32 team values, same 7-point grid. Schema addition
 within v1 — no version bump.
+
+## `leaderboards/` (Phase 4)
+
+Pre-computed rankings — the browser never sorts thousands of player files
+itself. Reads only from already-written `players/`, `teams/`, `seasons/`
+output; adds no new ingest path. Definitions: `docs/PHASE4_SPEC.md`.
+
+Three scopes, each a flat file bounded to **~100 entries per category**:
+
+- **`leaderboards/season/{year}.json`** — that single season's leaders.
+- **`leaderboards/records.json`** — best single-season performances **pooled
+  across 2015–2025** (a player can appear more than once, once per
+  qualifying season — this is "best seasons ever in the window", not career
+  totals).
+- **`leaderboards/career.json`** — **career totals within 2015–2025 only.**
+  Every entry in this file is implicitly truncated to the window; the UI
+  must display "2015–2025" wherever this file's numbers appear, or a real
+  career total will look wrong to anyone who knows the player.
+
+All three share one shape: `{"boards": {position_group: {stat_key: board}}}`
+(season/records also carry a `"TEAM"` group; season files add `"season"`,
+records/career add `"window": [2015, 2025]`). A **board**:
+
+```jsonc
+{
+  "label": "EPA per play",
+  "direction": "desc",              // "asc" for a fewest-is-best board
+  "qualifier": "pass_att >= 1500",  // null when the stat needs none
+  "entries": [
+    { "id": "00-0033873", "name": "Patrick Mahomes", "team": "KC",
+      "season": 2024,               // omitted on career.json entries
+      "value": 0.251, "rank": 1 }
+  ]
+}
+```
+
+Team entries use the same shape with `id` = franchise code (linking to
+`/teams/{franchise}`) and no `team` field; team boards additionally carry
+`"side": "offense"|"defense"` and `"style": true|false` — a `style` board
+(the six fingerprint axes) must **never** use the red/blue quality palette
+(see the Phase 3b style-vs-quality rule) since a high PROE means "more
+pass-happy", not "better".
+
+**Correctness rules baked into the build (`ingest/build.py`), not the UI:**
+
+- **Ranking is always within one canonical position group** (`POSITION_GROUPS`
+  / `POSITION_STAT_SETS`) — a stat never mixes positions, so a QB's two career
+  catches can never surface on the WR receiving-yards board.
+- **Any per-attempt/per-play stat carries a qualifier.** Season boards reuse
+  the position's existing `QUALIFIERS` entry (e.g. QB `pass_att >= 224`);
+  career boards use a separate, larger `CAREER_QUALIFIERS` floor (QB
+  `pass_att >= 1500`) so a two-game cameo can't top a career rate board.
+  Pure counting stats (yards, TDs, tackles) carry no qualifier — most is most.
+- **`NEGATIVE_STATS` (INTs, sacks taken, fumbles) sort ascending** (fewest
+  first) and **still require the qualifier** — without one, a "fewest INTs"
+  board is trivially topped by min-volume players with zero attempts.
+- Regular season only, matching `career`/`QUALIFIERS` elsewhere in the
+  schema; playoffs are out of scope for leaderboards.
 
 ## Stat dictionary (position-aware sets)
 
