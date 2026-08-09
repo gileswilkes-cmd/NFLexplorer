@@ -43,16 +43,25 @@ the whole job here** — a leaderboard that gets these wrong looks broken:
 CPOE, YAC-OE, passer-style metrics — any per-attempt stat. Without a minimum, the
 leaderboard is topped by a player who went 1-for-1. Apply the position's existing
 season qualifier (QB `pass_att >= 224`, etc.). For **career** rate leaderboards,
-apply a career-attempts floor (e.g. career `pass_att >= 1500`), not the season
-one. Counting stats (yards, TDs, tackles) need no qualifier — most is most.
+apply a career-attempts floor sized at roughly 4+ full seasons of real volume
+(QB `pass_att >= 2500`, RB `rush_att >= 1000`, WR `targets >= 450`, TE
+`targets >= 300`, K `fg_att >= 80`, DL/LB/DB `snaps >= 3000`), not the season
+one — a thin floor rewards short, low-volume careers on a board that claims to
+rank careers. Counting stats (yards, TDs, tackles) need no qualifier — most is
+most, and those boards stay uncapped.
 
 **2. Position filtering.** Rank each stat only within its canonical position
 group (reuse `POSITION_STAT_SETS`). Mahomes must not appear on the receiving-yards
 board for his 2 career catches.
 
-**3. Negative-stat direction.** For `NEGATIVE_STATS` (INTs, fumbles, sacks taken),
-"fewest" sorts ascending and is the meaningful board. Don't feature a "most INTs"
-board prominently; if included at all, label it plainly as a dubious distinction.
+**3. Negative stats are ranked as rates, not counts.** A raw "fewest INTs" board
+ranks whoever threw fewest passes, so it is not the meaningful board either.
+Bad-when-high stats become per-opportunity rates (`int_rate` =
+`pass_int / pass_att`, `fumble_rate` = `rush_fumbles / rush_att`, `sack_rate` =
+`sacks / (pass_att + sacks)`), sorted ascending, always gated by the position
+qualifier, each entry carrying its raw count and denominator for display
+("1.3% (66 INT / 5268 att)"). No "most INTs" or "most fumbles" board is produced
+at all, and `sack_yds` gets no board (derivative of sacks).
 
 **4. Window labelling is data, not just UI.** Every career and all-time entry is
 **2015–2025 only**. A career-passing-yards board showing a truncated total will
@@ -68,7 +77,7 @@ and per-season. Same negative-direction handling for defensive `*_allowed`.
 Report, and paste for inspection:
 - **One rate-stat board** (e.g. career completion % or EPA/play) — proving the
   qualifier holds and no tiny-sample fluke tops it.
-- **One negative-stat board** (fewest INTs, min attempts) — proving direction and
+- **One negative-rate board** (INT rate, min attempts) — proving direction and
   qualifier both apply.
 - The file sizes and per-category entry counts.
 
@@ -143,7 +152,8 @@ ingested data. Trends are league-wide only; per-team trends stay deferred.
 
 **At the gate:**
 - The rate-stat board's top entry is a real qualified player, not a 1-attempt fluke.
-- The negative-stat board sorts ascending (fewest) and respects the qualifier.
+- The negative-rate board sorts ascending (lowest rate) and respects the
+  qualifier, and each row shows the count/denominator behind the rate.
 - No out-of-position names (no QBs on receiving boards).
 
 **After the UI:**

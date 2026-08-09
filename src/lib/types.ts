@@ -151,3 +151,63 @@ export interface TeamIndex {
   schema_version: number;
   teams: TeamIndexEntry[];
 }
+
+// --- leaderboards + trends (Phase 4) ---
+
+export interface BoardEntry {
+  /** player gsis id, or franchise code on a TEAM board */
+  id: string;
+  name: string;
+  /** absent on career and TEAM boards */
+  team?: string | null;
+  /** absent on career.json entries */
+  season?: number;
+  value: number;
+  rank: number;
+  /** rate boards only: the raw count and its denominator behind `value` */
+  count?: number;
+  denom?: number;
+}
+
+export interface Board {
+  label: string;
+  direction: "asc" | "desc";
+  /** human-readable inclusion rule, e.g. "pass_att >= 2500"; null when none */
+  qualifier: string | null;
+  entries: BoardEntry[];
+  /** negative-rate boards: value is a fraction to render as a percentage */
+  format?: "pct";
+  count_label?: string;
+  denom_label?: string;
+  /** TEAM boards only */
+  side?: "offense" | "defense";
+  /** TEAM boards only: a style axis is NOT quality — never use the quality palette */
+  style?: boolean;
+}
+
+export interface LeaderboardDoc {
+  schema_version: number;
+  /** season files only */
+  season?: number;
+  /** records.json + career.json only */
+  window?: [number, number];
+  boards: Record<string, Record<string, Board>>;
+}
+
+export interface TrendMetric {
+  label: string;
+  unit: "pct" | "yards" | "points" | "epa" | "count" | "sec";
+  group: string;
+  about: string;
+  source: string;
+  /** non-empty => the latest season's value needs an asterisk */
+  flags: string[];
+  series: { season: number; value: number | null }[];
+}
+
+export interface TrendsDoc {
+  schema_version: number;
+  window: [number, number];
+  groups: string[];
+  metrics: Record<string, TrendMetric>;
+}

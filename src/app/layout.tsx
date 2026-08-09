@@ -33,6 +33,8 @@ export default function RootLayout({
             <a href="/" className="font-semibold tracking-tight">NFL Explorer</a>
             <a href="/compare" className="text-sm text-ink-secondary hover:text-foreground">Compare</a>
             <a href="/teams" className="text-sm text-ink-secondary hover:text-foreground">Teams</a>
+            <a href="/leaderboards" className="text-sm text-ink-secondary hover:text-foreground">Leaderboards</a>
+            <a href="/history" className="text-sm text-ink-secondary hover:text-foreground">History</a>
           </div>
         </header>
         {children}

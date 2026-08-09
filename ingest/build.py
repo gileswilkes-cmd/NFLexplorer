@@ -22,6 +22,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -1262,13 +1263,15 @@ def resolve_sample_ids() -> list[str]:
 LEADERBOARD_WINDOW = (2015, 2025)
 LEADERBOARD_CAP = 100
 
-# Career floors: roughly 7x the season qualifier (QUALIFIERS) — a "real
-# career" within the 2015-2025 window, not a cameo. QB's 1500 is the spec's
-# own suggested figure; the rest scale from the same season minimums.
+# Career floors: roughly 4+ full seasons of real volume within the 2015-2025
+# window. Deliberately well above a simple multiple of the season QUALIFIERS —
+# a thin floor makes a "career" rate board a list of short, low-volume careers
+# rather than of players who sustained the volume. Career RATE boards only;
+# counting ("most") boards stay uncapped, because most is most.
 CAREER_QUALIFIERS = {
-    "QB": ("pass_att", 1500), "RB": ("rush_att", 750),
-    "WR": ("targets", 350), "TE": ("targets", 200), "K": ("fg_att", 100),
-    "DL": ("snaps", 1500), "LB": ("snaps", 1500), "DB": ("snaps", 1500),
+    "QB": ("pass_att", 2500), "RB": ("rush_att", 1000),
+    "WR": ("targets", 450), "TE": ("targets", 300), "K": ("fg_att", 80),
+    "DL": ("snaps", 3000), "LB": ("snaps", 3000), "DB": ("snaps", 3000),
 }
 
 # Rate stats computed from two counting keys already stored in stats (not
@@ -1277,6 +1280,29 @@ DERIVED_STATS = {
     "cmp_pct": ("pass_cmp", "pass_att"), "ypa": ("pass_yds", "pass_att"),
     "ypc": ("rush_yds", "rush_att"), "ypr": ("rec_yds", "rec"),
     "fg_pct": ("fg_made", "fg_att"),
+}
+
+
+class NegRate(NamedTuple):
+    """A bad-when-high stat expressed per opportunity. `den` is summed, so sack
+    rate's denominator can be dropbacks (attempts + sacks). The labels travel
+    with the board so the UI can render "1.8% (14 INT / 780 att)"."""
+    num: str
+    den: tuple[str, ...]
+    count_label: str
+    denom_label: str
+
+
+# Replaces the raw "fewest INTs / fewest fumbles" boards outright. A count-based
+# negative board ranks by who played least — Player A's 2 INTs on 60 attempts
+# beats Brady's whole career — so the count is only meaningful divided by the
+# opportunities that produced it. These boards sort ascending and ALWAYS carry
+# the position qualifier: a 0% rate over 30 attempts is noise, and the
+# min-attempts floor is the only thing that makes the board real.
+NEGATIVE_RATE_STATS = {
+    "int_rate": NegRate("pass_int", ("pass_att",), "INT", "att"),
+    "fumble_rate": NegRate("rush_fumbles", ("rush_att",), "fumbles", "att"),
+    "sack_rate": NegRate("sacks", ("pass_att", "sacks"), "sacks", "dropbacks"),
 }
 
 STAT_LABELS = {
@@ -1292,13 +1318,18 @@ STAT_LABELS = {
     "yac_oe": "YAC over expected", "adot": "Average depth of target",
     "cmp_pct": "Completion %", "ypa": "Yards per attempt", "ypc": "Yards per carry",
     "ypr": "Yards per reception", "fg_pct": "Field goal %",
+    "int_rate": "Interception rate", "fumble_rate": "Fumble rate",
+    "sack_rate": "Sack rate taken",
 }
 
-# (stat key, kind) per canonical position group. kind: "counting" (raw sum,
-# no qualifier unless the stat is itself a NEGATIVE_STAT — rule 3: a "fewest"
-# board needs a volume floor or it's meaningless); "derived" (ratio of two
-# stored counting keys, ALWAYS qualified — rule 1); "rate" (a stored
-# per-play/per-attempt value, ALWAYS qualified — rule 1).
+# (stat key, kind) per canonical position group. kind: "counting" (raw sum, no
+# qualifier — most is most); "derived" (ratio of two stored counting keys,
+# ALWAYS qualified — rule 1); "rate" (a stored per-play/per-attempt value,
+# ALWAYS qualified — rule 1); "neg_rate" (NEGATIVE_RATE_STATS: bad-when-high
+# count over its opportunities, sorted ascending, ALWAYS qualified).
+# No board ranks a raw negative COUNT: there is no "most INTs" board and no
+# "fewest INTs" board, only interception rate. sack_yds gets no board of its
+# own either — it is derivative of sacks, which sack_rate already covers.
 _WR_TE_STATS = [
     ("rec", "counting"), ("rec_yds", "counting"), ("rec_td", "counting"),
     ("targets", "counting"), ("ypr", "derived"),
@@ -1306,13 +1337,14 @@ _WR_TE_STATS = [
 ]
 LEADERBOARD_STATS: dict[str, list[tuple[str, str]]] = {
     "QB": [
-        ("pass_yds", "counting"), ("pass_td", "counting"), ("pass_int", "counting"),
-        ("sacks", "counting"), ("rush_yds", "counting"), ("rush_td", "counting"),
+        ("pass_yds", "counting"), ("pass_td", "counting"),
+        ("int_rate", "neg_rate"), ("sack_rate", "neg_rate"),
+        ("rush_yds", "counting"), ("rush_td", "counting"),
         ("cmp_pct", "derived"), ("ypa", "derived"),
         ("epa_per_play", "rate"), ("cpoe", "rate"),
     ],
     "RB": [
-        ("rush_yds", "counting"), ("rush_td", "counting"), ("rush_fumbles", "counting"),
+        ("rush_yds", "counting"), ("rush_td", "counting"), ("fumble_rate", "neg_rate"),
         ("rec", "counting"), ("rec_yds", "counting"), ("rec_td", "counting"),
         ("ypc", "derived"), ("epa_per_play", "rate"), ("yac_oe", "rate"),
     ],
@@ -1367,6 +1399,17 @@ def _flat_for_board(block: dict) -> dict:
     return out
 
 
+def _neg_rate_parts(flat: dict, key: str) -> tuple[float, int, int] | None:
+    """(rate, count, denominator) for a NEGATIVE_RATE_STATS board, or None when
+    the player has no opportunities to divide by."""
+    spec = NEGATIVE_RATE_STATS[key]
+    den = sum(flat.get(k, 0) for k in spec.den)
+    if den <= 0:
+        return None
+    count = flat.get(spec.num, 0)
+    return count / den, int(count), int(den)
+
+
 def _board_value(flat: dict, key: str, kind: str) -> float | int | None:
     if kind == "derived":
         num_k, den_k = DERIVED_STATS[key]
@@ -1374,13 +1417,32 @@ def _board_value(flat: dict, key: str, kind: str) -> float | int | None:
         if den <= 0:
             return None
         return flat.get(num_k, 0) / den
+    if kind == "neg_rate":
+        parts = _neg_rate_parts(flat, key)
+        return None if parts is None else parts[0]
     if kind == "rate":
         return flat[key] if key in flat else None
     return flat.get(key, 0)  # counting: a real zero counts
 
 
+def _board_extras(flat: dict, key: str, kind: str) -> dict:
+    """Per-entry context beyond the sort value. Rate boards carry the raw count
+    and its denominator so the UI can show "1.8% (14 INT / 780 att)" — a bare
+    percentage hides whether it came from 780 attempts or 80."""
+    if kind != "neg_rate":
+        return {}
+    parts = _neg_rate_parts(flat, key)
+    return {} if parts is None else {"count": parts[1], "denom": parts[2]}
+
+
+def _is_negative_board(stat: str, kind: str) -> bool:
+    return kind == "neg_rate" or stat in NEGATIVE_STATS
+
+
 def _needs_qualifier(stat: str, kind: str) -> bool:
-    return kind in ("derived", "rate") or stat in NEGATIVE_STATS
+    # Every non-counting board is qualified. NEGATIVE_STATS no longer appear as
+    # boards in their own right (they are the numerators of NEGATIVE_RATE_STATS).
+    return kind in ("derived", "rate", "neg_rate")
 
 
 def _rank_entries(entries: list[dict], negative: bool, cap: int = LEADERBOARD_CAP) -> list[dict]:
@@ -1395,13 +1457,18 @@ def _rank_entries(entries: list[dict], negative: bool, cap: int = LEADERBOARD_CA
 
 
 def _player_board_meta(grp: str, stat: str, kind: str, scope: str) -> dict:
-    negative = stat in NEGATIVE_STATS
     qkey, qmin = (CAREER_QUALIFIERS if scope == "career" else QUALIFIERS)[grp]
-    return {
+    meta = {
         "label": STAT_LABELS.get(stat, stat),
-        "direction": "asc" if negative else "desc",
+        "direction": "asc" if _is_negative_board(stat, kind) else "desc",
         "qualifier": f"{qkey} >= {qmin}" if _needs_qualifier(stat, kind) else None,
     }
+    if kind == "neg_rate":
+        spec = NEGATIVE_RATE_STATS[stat]
+        meta["format"] = "pct"  # value is a fraction; render 0.018 as "1.8%"
+        meta["count_label"] = spec.count_label
+        meta["denom_label"] = spec.denom_label
+    return meta
 
 
 def build_leaderboards() -> None:
@@ -1437,7 +1504,8 @@ def build_leaderboards() -> None:
                 if v is None:
                     continue
                 season_cand[row["season"]][grp][stat].append(
-                    {"id": pid, "name": name, "team": row["team"], "season": row["season"], "value": v})
+                    {"id": pid, "name": name, "team": row["team"], "season": row["season"],
+                     "value": v, **_board_extras(flat, stat, kind)})
 
         career = doc.get("career")
         pos_latest = doc["profile"]["pos"]
@@ -1453,7 +1521,9 @@ def build_leaderboards() -> None:
                 v = _board_value(flat, stat, kind)
                 if v is None:
                     continue
-                career_cand[grp_latest][stat].append({"id": pid, "name": name, "team": team, "value": v})
+                career_cand[grp_latest][stat].append(
+                    {"id": pid, "name": name, "team": team, "value": v,
+                     **_board_extras(flat, stat, kind)})
 
     def write_boards(candidates_by_grp: dict[str, dict[str, list]], scope: str, path: Path, extra: dict) -> dict:
         boards = {}
@@ -1464,7 +1534,7 @@ def build_leaderboards() -> None:
                 if not entries:
                     continue
                 meta = _player_board_meta(grp, stat, kind, scope)
-                meta["entries"] = _rank_entries(entries, stat in NEGATIVE_STATS)
+                meta["entries"] = _rank_entries(entries, _is_negative_board(stat, kind))
                 grp_boards[stat] = meta
             if grp_boards:
                 boards[grp] = grp_boards
@@ -1557,6 +1627,210 @@ def build_team_leaderboards() -> None:
           f"{len(doc['boards']['TEAM'])} categories)")
 
 
+# --- Phase 4 Part 2: league-evolution trends ---------------------------------
+# One league-wide value per metric per season, computed from PBP under the SAME
+# filter regime as the team build (_team_season_metrics) so a trend line and a
+# team page can never disagree about what a "play" is. Definitions are frozen
+# across all 11 seasons — that is the whole point of a trend series, and it is
+# why the shared filters live in _trend_frames() rather than per metric.
+
+
+class Trend(NamedTuple):
+    label: str
+    unit: str      # "pct" (fraction) | "yards" | "points" | "epa" | "count" | "sec"
+    group: str     # chart grouping on /history
+    about: str     # the story the line tells, shown under the chart
+
+
+# Ordered: the /history page renders groups in this order.
+TRENDS: dict[str, Trend] = {
+    "points_per_game": Trend(
+        "Points per game", "points", "Scoring",
+        "Points scored per team per game."),
+    "pass_rate": Trend(
+        "Pass rate", "pct", "Passing",
+        "Share of competitive plays that were passes."),
+    "early_down_pass_rate": Trend(
+        "Early-down pass rate (neutral)", "pct", "Passing",
+        "Pass rate on 1st and 2nd down in neutral game states — intent, "
+        "stripped of the score effects that force passing."),
+    "completion_pct": Trend(
+        "Completion %", "pct", "Passing",
+        "Completions per pass attempt."),
+    "adot": Trend(
+        "Average depth of target", "yards", "Passing",
+        "Mean air yards per attempt — how far downfield the ball goes."),
+    "yards_per_play": Trend(
+        "Yards per play", "yards", "Efficiency",
+        "Yards gained per competitive play."),
+    "epa_per_play": Trend(
+        "EPA per play", "epa", "Efficiency",
+        "Expected points added per competitive play, league-wide."),
+    "sack_rate": Trend(
+        "Sack rate", "pct", "Efficiency",
+        "Sacks per dropback."),
+    "fourth_down_go_rate": Trend(
+        "4th-down go-for-it rate (neutral)", "pct", "4th-down aggression",
+        "Share of neutral-situation 4th downs where the offence ran a play "
+        "instead of punting or kicking a field goal."),
+    "two_point_rate": Trend(
+        "Two-point attempt rate", "pct", "4th-down aggression",
+        "Share of post-touchdown conversions that went for two."),
+    "fg_att_per_game": Trend(
+        "Field-goal attempts per game", "count", "Kicking",
+        "Field goals attempted per team per game."),
+    "fg_made_distance": Trend(
+        "Average made FG distance", "yards", "Kicking",
+        "Mean distance of made field goals — kickers keep getting longer."),
+    "rush_rate": Trend(
+        "Rush rate", "pct", "Rushing",
+        "Share of competitive plays that were runs (the complement of pass rate)."),
+}
+
+
+def _trend_frames(year: int):
+    """(competitive plays, neutral plays, all REG rows) under the team build's
+    filter regime: pass/rush plays only, no no_plays, no kneels or spikes;
+    neutral adds win probability 0.2-0.8 outside the final two minutes.
+
+    Two-point conversion plays stay in, exactly as they do for teams — the
+    inclusion is tiny (~0.3% of plays) and identical in every season, and a
+    trend series is worth more consistent than individually perfect.
+    """
+    pbp = fetch_pbp(year)
+    reg = pbp[pbp.season_type == "REG"]
+    plays = reg[((reg["pass"] == 1) | (reg["rush"] == 1)) & (reg.play_type != "no_play")]
+    comp = plays[(plays.qb_kneel != 1) & (plays.qb_spike != 1)]
+    neutral = comp[(comp.wp >= 0.2) & (comp.wp <= 0.8) & (comp.half_seconds_remaining > 120)]
+    return comp, neutral, reg
+
+
+def _season_trends(year: int) -> tuple[dict[str, float | None], dict[str, float]]:
+    """(values, completeness) for one season.
+
+    completeness[metric] is the share of the metric's OWN denominator rows that
+    carried the data it needs — not the column's share of all plays. Measuring
+    e.g. air_yards against every play would just track the league pass rate and
+    flag aDOT every year for nothing.
+    """
+    comp, neutral, reg = _trend_frames(year)
+
+    sched = fetch_schedules(year)
+    sched_reg = sched[sched.game_type == "REG"]
+    sreg = sched_reg[sched_reg.home_score.notna()]
+    games = len(sreg)
+    team_games = games * 2  # per-team-per-game denominators
+
+    att = comp[comp.pass_attempt == 1]
+    dropbacks = comp[comp.qb_dropback == 1]
+    ed = neutral[neutral.down.isin([1, 2])]
+
+    # 4th down needs punts and FGs in the universe, so it is built from reg
+    # rather than comp — but under the same neutral filter, so "aggression"
+    # isn't just end-of-half desperation, which would rise on its own.
+    d4 = reg[(reg.down == 4) & (reg.qb_kneel != 1) & (reg.qb_spike != 1)
+             & (reg.wp >= 0.2) & (reg.wp <= 0.8) & (reg.half_seconds_remaining > 120)
+             & reg.play_type.isin(["pass", "run", "punt", "field_goal"])]
+
+    conv = reg[(reg.play_type != "no_play")
+               & ((reg.two_point_attempt == 1) | (reg.extra_point_attempt == 1))]
+    fga = reg[reg.field_goal_attempt == 1]
+    made = fga[fga.field_goal_result == "made"]
+
+    values: dict[str, float | None] = {}
+    completeness: dict[str, float] = {}
+
+    def mean_of(key: str, frame: pd.DataFrame, col: str, digits: int = 3) -> None:
+        """Mean of one column over its own frame, plus how much of that frame
+        actually had a value."""
+        if len(frame) == 0:
+            values[key], completeness[key] = None, 0.0
+            return
+        s = pd.to_numeric(frame[col], errors="coerce")
+        completeness[key] = float(s.notna().mean())
+        values[key] = round(float(s.mean()), digits) if s.notna().any() else None
+
+    def ratio_of(key: str, num: float | int | None, den: float | int, cov: float) -> None:
+        values[key] = _f(num / den) if den and num is not None else None
+        completeness[key] = cov
+
+    sched_cov = float(len(sreg) / len(sched_reg)) if len(sched_reg) else 0.0
+    ratio_of("points_per_game", float(sreg.home_score.sum() + sreg.away_score.sum()),
+             team_games, sched_cov)
+    mean_of("pass_rate", comp, "pass")
+    mean_of("rush_rate", comp, "rush")
+    mean_of("early_down_pass_rate", ed, "pass")
+    mean_of("completion_pct", att, "complete_pass")
+    mean_of("adot", att, "air_yards", digits=2)
+    mean_of("yards_per_play", comp, "yards_gained")
+    mean_of("epa_per_play", comp, "epa")
+    ratio_of("sack_rate", int(comp.sack.sum()), len(dropbacks),
+             float(comp.qb_dropback.notna().mean()) if len(comp) else 0.0)
+    mean_of("fg_made_distance", made, "kick_distance", digits=2)
+    ratio_of("fg_att_per_game", len(fga), team_games, sched_cov)
+
+    # go-for-it: share of the 4th-down decision set that ran a play. Its inputs
+    # are categorical, so completeness is the share of 4th-down snaps that
+    # survived the neutral filter with a usable play_type and win probability.
+    d4_all = reg[(reg.down == 4) & (reg.play_type != "no_play")]
+    ratio_of("fourth_down_go_rate", int(d4.play_type.isin(["pass", "run"]).sum()), len(d4),
+             float(d4_all.wp.notna().mean()) if len(d4_all) else 0.0)
+    ratio_of("two_point_rate", int((conv.two_point_attempt == 1).sum()), len(conv),
+             float(conv.two_point_attempt.notna().mean()) if len(conv) else 0.0)
+
+    return values, completeness
+
+
+def build_trends() -> None:
+    """Part 2: public/data/trends.json.
+
+    The 2025 asterisk check is measured, not assumed. nflverse froze the legacy
+    weekly player-stats release after 2024, so 2025 player data comes from the
+    new-format fallback (see fetch_weekly) — but trends read play-by-play, which
+    has no such fallback. Rather than hardcode "fine", every metric's input
+    columns are compared against their 2015-2024 median coverage, and any metric
+    whose 2025 inputs are materially thinner gets a flag the UI can render as an
+    asterisk.
+    """
+    print("Building league trends…")
+    computed = {y: _season_trends(y) for y in ALL_SEASONS}
+    values = {y: v for y, (v, _c) in computed.items()}
+    completeness = {y: c for y, (_v, c) in computed.items()}
+
+    latest = ALL_SEASONS[-1]
+    prior = ALL_SEASONS[:-1]
+    metrics = {}
+    flagged = []
+    for key, t in TRENDS.items():
+        series = [{"season": y, "value": values[y][key]} for y in ALL_SEASONS]
+        flags = []
+        base = float(np.median([completeness[y][key] for y in prior]))
+        got = completeness[latest][key]
+        if base > 0 and got < base * 0.98:
+            flags.append(f"{latest} inputs {got:.1%} complete vs {base:.1%} median in "
+                         f"{prior[0]}-{prior[-1]} — treat this season as provisional")
+        if values[latest][key] is None:
+            flags.append(f"no {latest} value")
+        if flags:
+            flagged.append(key)
+        metrics[key] = {
+            "label": t.label, "unit": t.unit, "group": t.group, "about": t.about,
+            "source": "pbp",  # never the new-format weekly fallback
+            "flags": flags,
+            "series": series,
+        }
+
+    write_json(DATA_DIR / "trends.json", {
+        "schema_version": SCHEMA_VERSION,
+        "window": list(LEADERBOARD_WINDOW),
+        "groups": list(dict.fromkeys(t.group for t in TRENDS.values())),
+        "metrics": metrics,
+    })
+    p = DATA_DIR / "trends.json"
+    print(f"  wrote trends.json ({len(metrics)} metrics x {len(ALL_SEASONS)} seasons, {p.stat().st_size / 1024:.0f} KB)")
+    print(f"  2025 fallback/coverage flags: {', '.join(flagged) if flagged else 'none — every metric is PBP-derived with full 2025 coverage'}")
+
+
 # -----------------------------------------------------------------------------
 
 
@@ -1628,11 +1902,17 @@ def main() -> None:
                         help="run ONLY the team stage; pick sample franchises from the data")
     parser.add_argument("--leaderboards", action="store_true",
                         help="run ONLY the leaderboard stage (reads existing players/teams/seasons JSON, no ingest)")
+    parser.add_argument("--trends", action="store_true",
+                        help="run ONLY the league-trends stage (reads cached PBP, no player/team rebuild)")
     args = parser.parse_args()
 
     bad = [s for s in args.seasons if s not in ALL_SEASONS]
     if bad:
         parser.error(f"seasons outside the 2015-2025 window: {bad}")
+
+    if args.trends:
+        build_trends()
+        return
 
     if args.leaderboards:
         build_leaderboards()

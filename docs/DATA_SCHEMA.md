@@ -42,6 +42,7 @@ public/data/
     season/{year}.json      that season's leaders (players + teams)
     records.json            best single-season performances, pooled 2015-2025
     career.json             career totals within 2015-2025 (players only)
+  trends.json               league-wide metric series across 2015-2025 (Phase 4)
 ```
 
 ---
@@ -359,8 +360,8 @@ records/career add `"window": [2015, 2025]`). A **board**:
 ```jsonc
 {
   "label": "EPA per play",
-  "direction": "desc",              // "asc" for a fewest-is-best board
-  "qualifier": "pass_att >= 1500",  // null when the stat needs none
+  "direction": "desc",              // "asc" for a lower-is-better board
+  "qualifier": "pass_att >= 2500",  // null when the stat needs none
   "entries": [
     { "id": "00-0033873", "name": "Patrick Mahomes", "team": "KC",
       "season": 2024,               // omitted on career.json entries
@@ -368,6 +369,30 @@ records/career add `"window": [2015, 2025]`). A **board**:
   ]
 }
 ```
+
+**Negative-rate boards** (interception rate, fumble rate, sack rate — see the
+rules below) add three meta keys and two per-entry keys, so the UI can show the
+volume behind the percentage rather than a bare rate:
+
+```jsonc
+{
+  "label": "Interception rate",
+  "direction": "asc",
+  "qualifier": "pass_att >= 2500",
+  "format": "pct",                  // value is a fraction; render 0.0125 as "1.3%"
+  "count_label": "INT",             // -> "1.3% (66 INT / 5268 att)"
+  "denom_label": "att",
+  "entries": [
+    { "id": "00-0023459", "name": "Aaron Rodgers", "team": "PIT",
+      "value": 0.0125, "count": 66, "denom": 5268, "rank": 1 }
+  ]
+}
+```
+
+`format`/`count_label`/`denom_label` and `count`/`denom` appear **only** on
+these boards; their absence means the value is a plain number. Additive, so
+`schema_version` stays at 1 — no consumer reads these files yet (Phase 4 Part 3
+builds the page).
 
 Team entries use the same shape with `id` = franchise code (linking to
 `/teams/{franchise}`) and no `team` field; team boards additionally carry
@@ -383,14 +408,64 @@ pass-happy", not "better".
   catches can never surface on the WR receiving-yards board.
 - **Any per-attempt/per-play stat carries a qualifier.** Season boards reuse
   the position's existing `QUALIFIERS` entry (e.g. QB `pass_att >= 224`);
-  career boards use a separate, larger `CAREER_QUALIFIERS` floor (QB
-  `pass_att >= 1500`) so a two-game cameo can't top a career rate board.
+  career boards use a separate, much larger `CAREER_QUALIFIERS` floor set at
+  roughly **4+ full seasons of real volume** (QB `pass_att >= 2500`, RB
+  `rush_att >= 1000`, WR `targets >= 450`, TE `targets >= 300`, K
+  `fg_att >= 80`, DL/LB/DB `snaps >= 3000`). A thin career floor turns a
+  "career" rate board into a list of short, low-volume careers.
   Pure counting stats (yards, TDs, tackles) carry no qualifier — most is most.
-- **`NEGATIVE_STATS` (INTs, sacks taken, fumbles) sort ascending** (fewest
-  first) and **still require the qualifier** — without one, a "fewest INTs"
-  board is trivially topped by min-volume players with zero attempts.
+- **Bad-when-high stats are ranked as rates, never as raw counts.** A "fewest
+  INTs" board just ranks whoever threw fewest passes, so `NEGATIVE_RATE_STATS`
+  replaces those boards outright: `int_rate` = `pass_int / pass_att`,
+  `fumble_rate` = `rush_fumbles / rush_att`, `sack_rate` =
+  `sacks / (pass_att + sacks)` (dropbacks). They sort ascending, always carry
+  the position qualifier — a 0% rate over 30 attempts is noise, and the
+  min-attempts floor is what makes the board real — and each entry carries its
+  `count` and `denom` alongside the rate. There is **no "most INTs" / "most
+  fumbles" board**, and `sack_yds` gets no board of its own (derivative of
+  sacks, which `sack_rate` covers). `NEGATIVE_STATS` still governs percentile
+  inversion elsewhere in the schema.
 - Regular season only, matching `career`/`QUALIFIERS` elsewhere in the
   schema; playoffs are out of scope for leaderboards.
+
+## `trends.json` (Phase 4)
+
+One league-wide value per metric per season — the "how the NFL changed"
+series behind `/history`. Built by `build_trends()` from play-by-play under
+**the same filter regime as the team build** (`_trend_frames` mirrors
+`_team_season_metrics`: pass/rush plays, no `no_play`, no kneels or spikes;
+"neutral" adds win probability 0.2–0.8 outside the final two minutes), so a
+trend line and a team page can never disagree about what a play is.
+Definitions are frozen across all 11 seasons — that is the point of a series.
+
+```jsonc
+{
+  "schema_version": 1,
+  "window": [2015, 2025],
+  "groups": ["Scoring", "Passing", "Efficiency", "4th-down aggression", "Kicking", "Rushing"],
+  "metrics": {
+    "fourth_down_go_rate": {
+      "label": "4th-down go-for-it rate (neutral)",
+      "unit": "pct",              // pct (0–1 fraction) | yards | points | epa | count
+      "group": "4th-down aggression",
+      "about": "Share of neutral-situation 4th downs where …",  // shown under the chart
+      "source": "pbp",            // never the new-format weekly fallback
+      "flags": [],                // non-empty => render an asterisk
+      "series": [{ "season": 2015, "value": 0.064 }, /* … one per season, value nullable */]
+    }
+  }
+}
+```
+
+**The 2025 asterisk is measured, not assumed.** nflverse froze the legacy
+weekly player-stats release after 2024, so 2025 *player* data comes from the
+new-format fallback (see `fetch_weekly`) — but trends read play-by-play, which
+has no such fallback. The build still checks rather than asserting: each
+metric's inputs are scored for completeness **against that metric's own
+denominator** (aDOT against pass attempts, not against every play — otherwise
+the check just tracks the league pass rate), and any metric whose 2025
+completeness falls below 98% of its 2015–2024 median gets a `flags` entry.
+Currently every metric is clean, so all `flags` arrays are empty.
 
 ## Stat dictionary (position-aware sets)
 
