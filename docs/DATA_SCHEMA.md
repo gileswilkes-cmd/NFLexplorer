@@ -467,6 +467,53 @@ the check just tracks the league pass rate), and any metric whose 2025
 completeness falls below 98% of its 2015–2024 median gets a `flags` entry.
 Currently every metric is clean, so all `flags` arrays are empty.
 
+## `matchups/unit_ratings.json` and `matchups/schedule_2026.json` (Matchups product)
+
+Inputs to the weekly unit-matchup tool (`docs/MATCHUPS_SPEC.md`, `src/lib/matchups.ts`).
+Built by `ingest/build_matchups.py`, not `build.py` — it only reads the
+already-built `teams/{fr}.json` files and the schedule, so it can be re-run on
+its own once the ratings basis changes. Matchups themselves (edge, tags,
+interest score) are **not** pre-baked; they are computed client-side from
+these two files, so a future offseason-adjusted ratings file drops in with no
+other changes.
+
+```jsonc
+// matchups/unit_ratings.json — 32 teams x 4 units, 2025 EPA/play + league rank
+{
+  "schema_version": 1,
+  "season_basis": 2025,
+  "teams": {
+    "CIN": {
+      "run_off":  { "epa": 0.014, "rank": 6 },          // offense.by_play_type.rush.epa_per_play; rank 1 = best (highest EPA)
+      "pass_off": { "epa": -0.02, "rank": 25 },         // offense.by_play_type.pass.epa_per_play
+      "run_def":  { "epa_allowed": 0.058, "rank": 31 }, // defense.by_play_type.rush.epa_per_play_allowed; rank 1 = best (lowest EPA allowed)
+      "pass_def": { "epa_allowed": 0.18, "rank": 28 }   // defense.by_play_type.pass.epa_per_play_allowed
+    }
+    // … 32 teams total
+  }
+}
+```
+
+```jsonc
+// matchups/schedule_2026.json — from import_schedules(2026), REG season only
+{
+  "schema_version": 1,
+  "season": 2026,
+  "weeks": {
+    "1": [
+      { "game_id": "2026_01_NE_SEA", "away": "NE", "home": "SEA", "date": "2026-09-09" }
+      // … one entry per game, sorted by date then game_id
+    ]
+    // … "2" .. "18"
+  }
+}
+```
+
+Team codes match `teams/{fr}.json` franchise codes exactly (`LA`, `LAC`, `LV`,
+etc.) — no remapping needed. If `import_schedules(2026)` ever returns no REG
+rows (schedule not yet published), the build step aborts rather than writing
+an empty file — the product has no fallback for a missing schedule.
+
 ## Stat dictionary (position-aware sets)
 
 All stat maps (`stats` in season rows, career, game logs, baselines) draw
