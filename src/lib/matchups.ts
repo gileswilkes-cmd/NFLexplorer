@@ -75,6 +75,10 @@ export interface GameMatchups {
   matchups: UnitMatchup[];
   tags: GameTag[];
   interest: number;
+  /** Cautious 1-2 sentence readout of the matchup, derived from the four
+   *  edges above — see computeVerdict. Hedged language only; no predicted
+   *  winner or scoreline (docs/MATCHUPS_VERDICT.md). */
+  verdict: string;
 }
 
 function tagForMatchup(offRank: number, defRank: number): PerMatchupTag {
@@ -215,6 +219,72 @@ export function computeInterestScore(matchups: UnitMatchup[]): number {
   return score;
 }
 
+function ordinal(n: number): string {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+}
+
+/** A team's pass-weighted offensive edge across both its matchups this game
+ *  (same weighting as computeInterestScore) — the "lean" input from the spec. */
+function teamLeanScore(matchups: UnitMatchup[], team: string): number {
+  const pass = matchups.find((m) => m.offTeam === team && m.kind === "pass")!;
+  const run = matchups.find((m) => m.offTeam === team && m.kind === "run")!;
+  return pass.edge * PASS_WEIGHT + run.edge * RUN_WEIGHT;
+}
+
+// Lean bucket thresholds (docs/MATCHUPS_VERDICT.md), sanity-checked against
+// the Week 1 2026 |homeLean - awayLean| distribution (0.5 to 59, roughly
+// evenly spread): <10 keeps the near-coin-flip games (e.g. DAL @ NYG at 0.5)
+// as "even"; >30 catches the real blowout leans (e.g. WAS @ PHI at 59, CLE @
+// JAX at 46) as "clearly favoured"; 10-30 is the broad "edge to" middle.
+const LEAN_EVEN_MAX = 10;
+const LEAN_CLEAR_MIN = 30;
+
+function leanPhrase(diff: number, home: string, away: string): string {
+  const abs = Math.abs(diff);
+  const favourite = diff >= 0 ? home : away;
+  if (abs < LEAN_EVEN_MAX) return "roughly even";
+  if (abs <= LEAN_CLEAR_MIN) return `edge to ${favourite}`;
+  return `${favourite} clearly favoured`;
+}
+
+function dominantMatchupPhrase(m: UnitMatchup): string {
+  const defRank = ordinal(m.defRank);
+  return m.edge > 0
+    ? `${m.offTeam}'s ${m.kind} offence should move the ball against ${m.defTeam}'s ${defRank}-ranked ${m.kind} defence`
+    : `${m.offTeam}'s ${m.kind} offence may struggle against ${m.defTeam}'s ${defRank}-ranked ${m.kind} defence`;
+}
+
+function characterPhrase(tags: GameTag[]): string | null {
+  if (tags.includes("Shootout")) return "points likely on both sides";
+  if (tags.includes("Defensive struggle")) return "low-scoring";
+  if (tags.includes("Clash")) return "elite units collide";
+  return null;
+}
+
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Cautious 1-2 sentence verdict from the four edges already on the card:
+ *  which matchup tells the story (largest |edge|), the game's character
+ *  (from its tags), and the overall lean (pass-weighted offensive-edge
+ *  difference). Hedged verbs only — never a predicted winner or scoreline,
+ *  since the ratings are a 2025 extrapolation (docs/MATCHUPS_VERDICT.md). */
+export function computeVerdict(matchups: UnitMatchup[], tags: GameTag[], home: string, away: string): string {
+  const diff = teamLeanScore(matchups, home) - teamLeanScore(matchups, away);
+  const dominant = matchups.reduce((a, b) => (Math.abs(b.edge) > Math.abs(a.edge) ? b : a));
+  const headline = `${capitalize(dominantMatchupPhrase(dominant))}.`;
+  const character = characterPhrase(tags);
+  const lean = leanPhrase(diff, home, away);
+  const tail = character ? `${capitalize(character)}; ${lean}.` : `${capitalize(lean)}.`;
+  return `${headline} ${tail}`;
+}
+
 export function computeGameMatchups(
   game: ScheduleGame,
   ratings: Record<string, TeamUnitRatings>
@@ -222,7 +292,8 @@ export function computeGameMatchups(
   const matchups = computeUnitMatchups(game, ratings);
   const tags = computeGameTags(matchups, game.home, game.away);
   const interest = computeInterestScore(matchups);
-  return { game, matchups, tags, interest };
+  const verdict = computeVerdict(matchups, tags, game.home, game.away);
+  return { game, matchups, tags, interest, verdict };
 }
 
 /** All games in a week, sorted most-interesting first. */

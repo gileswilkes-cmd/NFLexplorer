@@ -52,7 +52,6 @@ export default function GameCard({ gm, meta }: { gm: GameMatchups; meta: TeamMet
   const awayRun = matchups.find((m) => m.offTeam === game.away && m.kind === "run")!;
   const homePass = matchups.find((m) => m.offTeam === game.home && m.kind === "pass")!;
   const homeRun = matchups.find((m) => m.offTeam === game.home && m.kind === "run")!;
-  const taggedMatchups = matchups.filter((m) => m.tag);
 
   return (
     <div
@@ -88,6 +87,8 @@ export default function GameCard({ gm, meta }: { gm: GameMatchups; meta: TeamMet
         ))}
       </div>
 
+      <p className="mb-3 text-[15px] leading-snug text-ink-secondary sm:text-[16px]">{gm.verdict}</p>
+
       <div className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2.5 gap-y-2.5">
         <div />
         <div className="text-center text-xs font-semibold uppercase tracking-wide text-ink-muted">
@@ -108,28 +109,6 @@ export default function GameCard({ gm, meta }: { gm: GameMatchups; meta: TeamMet
         </div>
         <MatchupCell m={homePass} />
         <MatchupCell m={homeRun} />
-      </div>
-
-      {taggedMatchups.length > 0 && (
-        <div className="mt-2.5 flex flex-col gap-1">
-          {taggedMatchups.map((m) => (
-            <p key={`${m.offTeam}-${m.kind}`} className="text-xs text-ink-secondary">
-              <span className="font-medium">{m.offTeam} {m.kind}</span>: {m.tag}
-            </p>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-muted">
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: "var(--tier-hi-bg)" }} />
-          top 8
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: "var(--tier-lo-bg)" }} />
-          bottom 8
-        </span>
-        <span>left number = offense rank</span>
       </div>
 
       {expanded && (

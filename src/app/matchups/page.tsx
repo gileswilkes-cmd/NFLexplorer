@@ -25,6 +25,24 @@ function Select({ label, value, onChange, children }: {
   );
 }
 
+// Legend for the rank pills inside every card's grid — shown once here
+// instead of repeating on each card (docs/MATCHUPS_VERDICT.md).
+function RankLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-muted">
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2.5 w-2.5 rounded-full" style={{ background: "var(--tier-hi-bg)" }} />
+        top 8
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2.5 w-2.5 rounded-full" style={{ background: "var(--tier-lo-bg)" }} />
+        bottom 8
+      </span>
+      <span>left number = offense rank</span>
+    </div>
+  );
+}
+
 function weekDateRange(games: { date: string }[]): string {
   const dates = games.map((g) => g.date).sort();
   const first = dates[0], last = dates[dates.length - 1];
@@ -101,6 +119,7 @@ function MatchupsInner() {
       </div>
 
       <HonestyCaption />
+      <RankLegend />
 
       {error && <p className="text-ink-muted">Couldn&apos;t load matchup data.</p>}
       {loading && !error && <p className="text-ink-muted">Loading…</p>}
