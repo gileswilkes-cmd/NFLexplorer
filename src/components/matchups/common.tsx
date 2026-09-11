@@ -1,4 +1,3 @@
-import { percentileTier } from "@/lib/percentile";
 import type { GameTag, PerMatchupTag } from "@/lib/matchups";
 
 export function ordinal(n: number): string {
@@ -12,41 +11,38 @@ export function ordinal(n: number): string {
   }
 }
 
-/** rank 1-32 -> the same diverging quality tier used for percentile badges
- *  (rank IS quality here, unlike the Phase 3 style axes — see MATCHUPS_SPEC.md). */
-export function rankTier(rank: number, total = 32): -3 | -2 | -1 | 0 | 1 | 2 | 3 {
-  const pseudoPct = ((total - rank + 1) / total) * 100;
-  return percentileTier(pseudoPct);
+// Same top-8 / bottom-8 thresholds as STRONG_RANK / WEAK_RANK in matchups.ts
+// (kept in sync manually — those constants aren't exported).
+const STRONG_RANK = 8;
+const WEAK_RANK = 25;
+
+/** rank 1-32 -> three-tier quality band (docs/MATCHUPS_CARD_RESTYLE.md): top 8
+ *  strong, bottom 8 weak, everything else neutral. Deliberately coarser than
+ *  the 7-bucket percentile scale used elsewhere — this restyle calls for a
+ *  simple top-8/bottom-8 read, not a gradient. */
+export function rankTier3(rank: number): "hi" | "mid" | "lo" {
+  if (rank <= STRONG_RANK) return "hi";
+  if (rank >= WEAK_RANK) return "lo";
+  return "mid";
 }
 
-export function rankTierVar(rank: number): string {
-  const tier = rankTier(rank);
-  return tier === 0 ? "var(--pct-mid)" : tier > 0 ? `var(--pct-hi-${tier})` : `var(--pct-lo-${-tier})`;
-}
-
-/** Rank chip: quality-tinted background (blue = strong, red = weak), like PctBadge. */
-export function RankChip({ rank }: { rank: number }) {
+/** Rank pill: bare number, teal (top 8) / coral (bottom 8) / neutral grey
+ *  (middle) tint — deliberately not the red/green or blue/red diverging
+ *  palette used elsewhere, per the restyle brief (reduced colour vision). */
+export function RankPill({ rank }: { rank: number }) {
+  const tier = rankTier3(rank);
+  const style =
+    tier === "hi"
+      ? { background: "var(--tier-hi-bg)", color: "var(--tier-hi-fg)" }
+      : tier === "lo"
+      ? { background: "var(--tier-lo-bg)", color: "var(--tier-lo-fg)" }
+      : { background: "var(--pct-mid)", color: "var(--ink-secondary)" };
   return (
     <span
-      className="tabular inline-block min-w-[2.75em] rounded px-1 py-0.5 text-center text-[11px] font-medium leading-none"
-      style={{ background: rankTierVar(rank) }}
+      className="tabular inline-flex min-w-[2.25em] items-center justify-center rounded-md px-1.5 py-1 text-[16px] font-medium leading-none"
+      style={style}
     >
-      {ordinal(rank)}
-    </span>
-  );
-}
-
-/** Edge chip: signed rank-gap, blue when the offence is favoured, red when the defence is. */
-export function EdgeChip({ edge }: { edge: number }) {
-  const tier = edge === 0 ? 0 : edge > 0 ? 2 : -2;
-  const varName = tier === 0 ? "var(--pct-mid)" : tier > 0 ? "var(--pct-hi-2)" : "var(--pct-lo-2)";
-  return (
-    <span
-      className="tabular inline-block min-w-[2.75em] rounded px-1 py-0.5 text-center text-[11px] font-medium leading-none"
-      style={{ background: varName }}
-      title={edge > 0 ? "offence favoured" : edge < 0 ? "defence favoured" : "even"}
-    >
-      {edge > 0 ? "+" : ""}{edge}
+      {rank}
     </span>
   );
 }

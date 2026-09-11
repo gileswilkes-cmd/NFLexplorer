@@ -17,6 +17,12 @@
   --pct-lo-1: #fbeceb;
   --pct-lo-2: #f8d7d6;
   --pct-lo-3: #f2b3b2;
+  /* matchups rank-tier tint (teal/coral, NOT red/green — reduced colour
+     vision accessibility, docs/MATCHUPS_CARD_RESTYLE.md): top 8 / bottom 8 */
+  --tier-hi-bg: #e1f5ee;
+  --tier-hi-fg: #0f6e56;
+  --tier-lo-bg: #faece7;
+  --tier-lo-fg: #993c1d;
   /* categorical series (dataviz palette slots 1-2) */
   --series-1: #2a78d6;
   --series-2: #008300;
@@ -53,6 +59,10 @@
     --pct-lo-1: #47201f;
     --pct-lo-2: #672d2c;
     --pct-lo-3: #8f3a39;
+    --tier-hi-bg: #123d34;
+    --tier-hi-fg: #6fe0c1;
+    --tier-lo-bg: #4a2418;
+    --tier-lo-fg: #f2a07e;
     --series-1: #3987e5;
     --series-2: #008300;
     --style-bar: #9085e9;
