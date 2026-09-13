@@ -250,12 +250,35 @@ function teamLeanScore(matchups: UnitMatchup[], team: string): number {
 const LEAN_EVEN_MAX = 10;
 const LEAN_CLEAR_MIN = 30;
 
-function leanPhrase(diff: number, home: string, away: string): string {
+export type ModelLean = "even" | "edge" | "clear";
+
+export interface ModelForecast {
+  /** null when the lean is "even" — no team is favoured */
+  favourite: string | null;
+  lean: ModelLean;
+  /** rounded |pass-weighted offensive-edge diff| — a lean magnitude, not a
+   *  literal predicted point margin (the product never predicts scorelines). */
+  marginEst: number;
+}
+
+/** The model's favourite/lean/margin from the pass-weighted offensive-edge
+ *  diff — same thresholds leanPhrase renders as prose, exported so the
+ *  weekly prediction snapshot (ingest/refresh_week.ts) can freeze the same
+ *  numbers the verdict text is built from, not a second computation. */
+export function computeModelForecast(matchups: UnitMatchup[], home: string, away: string): ModelForecast {
+  const diff = teamLeanScore(matchups, home) - teamLeanScore(matchups, away);
   const abs = Math.abs(diff);
-  const favourite = diff >= 0 ? home : away;
-  if (abs < LEAN_EVEN_MAX) return "roughly even";
-  if (abs <= LEAN_CLEAR_MIN) return `edge to ${favourite}`;
-  return `${favourite} clearly favoured`;
+  const marginEst = Math.round(abs);
+  if (abs < LEAN_EVEN_MAX) return { favourite: null, lean: "even", marginEst };
+  const favourite = diff > 0 ? home : away;
+  const lean: ModelLean = abs <= LEAN_CLEAR_MIN ? "edge" : "clear";
+  return { favourite, lean, marginEst };
+}
+
+function leanPhrase(forecast: ModelForecast): string {
+  if (forecast.lean === "even") return "roughly even";
+  if (forecast.lean === "edge") return `edge to ${forecast.favourite}`;
+  return `${forecast.favourite} clearly favoured`;
 }
 
 function dominantMatchupPhrase(m: UnitMatchup): string {
@@ -280,11 +303,11 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
  *  difference). Hedged verbs only — never a predicted winner or scoreline,
  *  since the ratings are a 2025 extrapolation (docs/MATCHUPS_VERDICT.md). */
 export function computeVerdict(matchups: UnitMatchup[], tags: GameTag[], home: string, away: string): string {
-  const diff = teamLeanScore(matchups, home) - teamLeanScore(matchups, away);
+  const forecast = computeModelForecast(matchups, home, away);
   const dominant = matchups.reduce((a, b) => (Math.abs(b.edge) > Math.abs(a.edge) ? b : a));
   const headline = `${capitalize(dominantMatchupPhrase(dominant))}.`;
   const character = characterPhrase(tags);
-  const lean = leanPhrase(diff, home, away);
+  const lean = leanPhrase(forecast);
   const tail = character ? `${capitalize(character)}; ${lean}.` : `${capitalize(lean)}.`;
   return `${headline} ${tail}`;
 }

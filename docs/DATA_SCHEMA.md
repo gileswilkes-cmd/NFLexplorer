@@ -43,6 +43,13 @@ public/data/
     records.json            best single-season performances, pooled 2015-2025
     career.json             career totals within 2015-2025 (players only)
   trends.json               league-wide metric series across 2015-2025 (Phase 4)
+  matchups/
+    unit_ratings.json        32 teams x 4 units, 2025 EPA/play + league rank
+    schedule_2026.json       2026 REG schedule, scores fill in as games are played
+    odds_2026.json           pull-and-commit betting lines (Matchups product)
+  predictions/
+    week_{N}.json            frozen ex ante model + market forecast per game (Matchups product)
+    meta.json                merge-not-replace index of which weeks have a snapshot
 ```
 
 ---
@@ -566,6 +573,79 @@ games roll to the next calendar date versus the schedule's local kickoff
 date. Full-name → code mapping for all 32 teams lives in
 `TEAM_NAME_TO_CODE` in `pull_odds.mjs`; an unrecognized name from the feed
 aborts the script rather than silently dropping that game.
+
+## `predictions/week_{N}.json` and `predictions/meta.json` (Matchups product — frozen forecasts)
+
+Written by `ingest/refresh_week.ts` (`npm run refresh:week`, docs/MATCHUPS_REFRESH.md),
+the weekly orchestrator that git-pulls, refreshes `schedule_2026.json` and
+`odds_2026.json`, then writes/refreshes the snapshot for whichever week
+`defaultWeek()` (`src/lib/matchups.ts`) currently considers "upcoming" — the
+same rule `/matchups` itself uses for its default week. Nothing else is
+touched; a fully-past week's file is simply never revisited once the
+"upcoming" week moves on.
+
+```jsonc
+// predictions/week_1.json
+{
+  "schema_version": 1,
+  "season": 2026,
+  "week": 1,
+  "captured_at": "2026-09-13T21:36:49.283Z",
+  "games": [
+    {
+      "game_id": "2026_01_ARI_LAC", "away": "ARI", "home": "LAC", "kickoff": "2026-09-13",
+      "model": {
+        "favourite": "LAC", "lean": "clear",   // "even" | "edge" | "clear" — same buckets the verdict prose uses
+        "margin_est": 48,                      // rounded |pass-weighted offensive-edge diff| — a lean magnitude,
+                                                // NOT a predicted scoreline (the product never predicts one)
+        "tags": ["Even"], "verdict": "…frozen verdict text, byte-for-byte what the card showed at capture time…"
+      },
+      "market": { "favourite": "LAC", "spread": 2.5, "total": 45.5, "book": "draftkings" },
+      "captured": true
+    },
+    {
+      "game_id": "2026_01_NE_SEA", "away": "NE", "home": "SEA", "kickoff": "2026-09-09",
+      "captured": false   // played before this pipeline ever ran for week 1 — no `model`/`market` keys at
+                           // all, never reconstructed; the honest record starts from the first week captured
+    }
+    // … one entry per game in the week
+  ]
+}
+```
+
+```jsonc
+// predictions/meta.json — merge-not-replace, same pattern as the top-level meta.json fix
+{
+  "schema_version": 1,
+  "season": 2026,
+  "generated_at": "2026-09-13T21:36:49.286Z",
+  "weeks_captured": [1]   // every week a snapshot file has ever been written for, union'd in, never replaced —
+                           // a run that only touches week_3.json must not make it look like weeks 1-2 never happened
+}
+```
+
+**The freeze rule** (non-negotiable — see `docs/MATCHUPS_REFRESH.md`): a
+game's `model`/`market` are only ever (re)computed while it hasn't kicked
+off. "Kicked off" is read from `schedule_2026.json`'s `away_score`/`home_score`
+(not a kickoff timestamp — this product has no such field, and the fixture
+data doesn't advance with the wall clock, so score presence is the only
+reliable signal). Concretely, each run:
+- **Not yet kicked off:** always recomputes both forecasts fresh from
+  whatever ratings/odds are live right now — a moving market line keeps
+  winning right up to kickoff, and re-running the refresh several times
+  before Sunday is expected and fine.
+- **Already kicked off, had a prior snapshot:** that snapshot is carried over
+  byte-for-byte, forever — never recomputed, never touched again.
+- **Already kicked off, no prior snapshot** (the refresh didn't run before
+  that game's kickoff): written once as `"captured": false` with no `model`/
+  `market` keys, and never back-filled — a recomputed "prediction" for a
+  finished game isn't ex ante, and the market line that existed pre-kickoff
+  is gone for good.
+
+`ingest/refresh_week.ts` exports `buildPredictionSnapshot()` for testing;
+importing the module for that must never trigger the live pipeline (it hits
+a quota-limited API), which is why the file guards its own `main()` behind
+`require.main === module`.
 
 ## Stat dictionary (position-aware sets)
 
