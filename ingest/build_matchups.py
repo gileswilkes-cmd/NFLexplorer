@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import nfl_data_py as nfl
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import DATA_DIR, REPO_ROOT, SCHEMA_VERSION, write_json  # noqa: E402
@@ -107,6 +108,8 @@ def build_schedule() -> dict:
             "away": row["away_team"],
             "home": row["home_team"],
             "date": row["gameday"],
+            "away_score": None if pd.isna(row["away_score"]) else int(row["away_score"]),
+            "home_score": None if pd.isna(row["home_score"]) else int(row["home_score"]),
         })
 
     return {"schema_version": SCHEMA_VERSION, "season": SCHEDULE_SEASON, "weeks": weeks}

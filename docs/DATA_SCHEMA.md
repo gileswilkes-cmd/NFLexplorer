@@ -501,7 +501,10 @@ other changes.
   "season": 2026,
   "weeks": {
     "1": [
-      { "game_id": "2026_01_NE_SEA", "away": "NE", "home": "SEA", "date": "2026-09-09" }
+      {
+        "game_id": "2026_01_NE_SEA", "away": "NE", "home": "SEA", "date": "2026-09-09",
+        "away_score": 10, "home_score": 13  // null, null until the game is played
+      }
       // … one entry per game, sorted by date then game_id
     ]
     // … "2" .. "18"
@@ -513,6 +516,56 @@ Team codes match `teams/{fr}.json` franchise codes exactly (`LA`, `LAC`, `LV`,
 etc.) — no remapping needed. If `import_schedules(2026)` ever returns no REG
 rows (schedule not yet published), the build step aborts rather than writing
 an empty file — the product has no fallback for a missing schedule.
+`away_score`/`home_score` come straight off the same `import_schedules(2026)`
+row (`pd.isna` -> `null` until the game has been played); the UI uses them to
+tell a finished game from a scheduled one, e.g. on `/matchups` where a played
+game's MARKET line shows the final score instead of a spread.
+
+## `matchups/odds_2026.json` (Matchups product — betting lines)
+
+Pull-and-commit, not build-time: `ingest/pull_odds.mjs` is a **local-only**
+Node script that hits the-odds-api.com with a key from `.env.local`
+(gitignored, never sent to Vercel) and writes this file, which the deployed
+site then reads statically like any other `public/data/` file. Re-run it
+locally and commit the refreshed JSON whenever you want newer lines — there
+is no server-side fetch and no runtime secret.
+
+```jsonc
+// matchups/odds_2026.json
+{
+  "schema_version": 1,
+  "season": 2026,
+  "book": "draftkings",              // consistent single source; not a market consensus
+  "generated_at": "2026-09-13T06:59:40.672Z",
+  "weeks": {
+    "1": [
+      {
+        "game_id": "2026_01_ARI_LAC", "away": "ARI", "home": "LAC",
+        "odds": { "total": 47.5, "favorite": "LAC", "spread": 9.5 }
+      },
+      {
+        "game_id": "2026_01_NE_SEA", "away": "NE", "home": "SEA",
+        "odds": null                 // no DraftKings line posted yet — render as "lines not yet posted", never 0
+      }
+      // … one entry per scheduled game, every week 1-18
+    ]
+  }
+}
+```
+
+Every game in `schedule_2026.json` gets an entry — games are never omitted
+for lack of odds. `odds` is `null` for anything DraftKings hasn't priced yet
+(already-played games, or teams/weeks the book hasn't opened lines for); the
+UI must render that as "n/a" / "lines not yet posted", never as 0 — except for
+an already-played game, which the UI detects from `schedule_2026.json`'s
+`away_score`/`home_score` and renders as the final score instead of falling
+through to "lines not yet posted". Games are
+matched between the schedule and the odds feed **by away/home team-code
+pair**, never by date — the feed's `commence_time` is UTC and late-window
+games roll to the next calendar date versus the schedule's local kickoff
+date. Full-name → code mapping for all 32 teams lives in
+`TEAM_NAME_TO_CODE` in `pull_odds.mjs`; an unrecognized name from the feed
+aborts the script rather than silently dropping that game.
 
 ## Stat dictionary (position-aware sets)
 

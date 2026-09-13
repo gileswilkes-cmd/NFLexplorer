@@ -31,6 +31,10 @@ export interface ScheduleGame {
   away: string;
   home: string;
   date: string;
+  /** null until the game has been played */
+  away_score: number | null;
+  /** null until the game has been played */
+  home_score: number | null;
 }
 
 export interface ScheduleDoc {

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { GameMatchups, UnitMatchup } from "@/lib/matchups";
+import { formatFinalLine, formatMarketLine, oddsForGame, type OddsDoc } from "@/lib/odds";
 import type { TeamIndexEntry } from "@/lib/types";
 import { RankPill, gameTagStyle, ordinal } from "./common";
 
@@ -44,9 +45,16 @@ function MatchupCell({ m }: { m: UnitMatchup }) {
 
 const fmtEpa = (v: number) => (v > 0 ? "+" : "") + v.toFixed(3);
 
-export default function GameCard({ gm, meta }: { gm: GameMatchups; meta: TeamMeta }) {
+export default function GameCard({ gm, meta, oddsDoc, week }: {
+  gm: GameMatchups; meta: TeamMeta; oddsDoc: OddsDoc | null; week: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const { game, matchups, tags, interest } = gm;
+  const odds = oddsForGame(oddsDoc, week, game.game_id);
+  const isFinal = game.away_score !== null && game.home_score !== null;
+  const marketLine = isFinal
+    ? formatFinalLine(game.away, game.home, game.away_score!, game.home_score!)
+    : formatMarketLine(odds);
 
   const awayPass = matchups.find((m) => m.offTeam === game.away && m.kind === "pass")!;
   const awayRun = matchups.find((m) => m.offTeam === game.away && m.kind === "run")!;
@@ -87,7 +95,20 @@ export default function GameCard({ gm, meta }: { gm: GameMatchups; meta: TeamMet
         ))}
       </div>
 
-      <p className="mb-3 text-[15px] leading-snug text-ink-secondary sm:text-[16px]">{gm.verdict}</p>
+      <div className="mb-3 flex flex-col gap-1.5 rounded-lg border border-hairline bg-background px-3 py-2.5">
+        <p className="text-[15px] leading-snug text-ink-secondary sm:text-[16px]">
+          <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+            Model
+          </span>
+          {gm.verdict}
+        </p>
+        <p className="tabular text-sm text-ink-secondary">
+          <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+            Market
+          </span>
+          {marketLine}
+        </p>
+      </div>
 
       <div className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2.5 gap-y-2.5">
         <div />
@@ -111,6 +132,11 @@ export default function GameCard({ gm, meta }: { gm: GameMatchups; meta: TeamMet
         <MatchupCell m={homeRun} />
       </div>
 
+      {expanded && !isFinal && odds && (
+        <p className="mt-3 border-t border-hairline pt-3 tabular text-xs text-ink-muted">
+          Exact line: {odds.favorite ? `${odds.favorite} -${odds.spread}` : "pick 'em"} · O/U {odds.total}
+        </p>
+      )}
       {expanded && (
         <div className="mt-3 border-t border-hairline pt-3 text-xs text-ink-secondary">
           <p className="mb-1.5 font-medium text-ink-muted">2025 EPA/play (raw)</p>

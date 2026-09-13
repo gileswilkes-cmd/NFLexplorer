@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   computeWeekMatchups, defaultWeek, type ScheduleDoc, type UnitRatingsDoc,
 } from "@/lib/matchups";
+import type { OddsDoc } from "@/lib/odds";
 import type { TeamIndex, TeamIndexEntry } from "@/lib/types";
 import GameCard from "@/components/matchups/GameCard";
 
@@ -67,6 +68,7 @@ function MatchupsInner() {
   const [scheduleDoc, setScheduleDoc] = useState<ScheduleDoc | null>(null);
   const [ratingsDoc, setRatingsDoc] = useState<UnitRatingsDoc | null>(null);
   const [teamIndex, setTeamIndex] = useState<TeamIndex | null>(null);
+  const [oddsDoc, setOddsDoc] = useState<OddsDoc | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -77,6 +79,13 @@ function MatchupsInner() {
     ])
       .then(([s, r, t]) => { setScheduleDoc(s); setRatingsDoc(r); setTeamIndex(t); })
       .catch(() => setError(true));
+
+    // Odds are supplementary — a missing/failed pull degrades to "lines not
+    // yet posted" everywhere rather than blocking the core matchups page.
+    fetch("/data/matchups/odds_2026.json")
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(setOddsDoc)
+      .catch(() => setOddsDoc(null));
   }, []);
 
   const weekParam = params.get("week");
@@ -148,7 +157,7 @@ function MatchupsInner() {
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {games.map((gm) => (
-              <GameCard key={gm.game.game_id} gm={gm} meta={teamMeta} />
+              <GameCard key={gm.game.game_id} gm={gm} meta={teamMeta} oddsDoc={oddsDoc} week={week} />
             ))}
           </div>
         </>
