@@ -47,6 +47,33 @@ export function RankPill({ rank }: { rank: number }) {
   );
 }
 
+const INJURY_ABBR: Record<"Out" | "Doubtful" | "Questionable", string> = {
+  Out: "O", Doubtful: "D", Questionable: "Q",
+};
+
+/** Injury-status badge (docs/MATCHUPS_INJURIES.md) — a health flag, not a
+ *  quality signal, so it deliberately reuses the "attention" red tint
+ *  (pct-lo-*) already used for game-character tags (gameTagStyle), not the
+ *  teal/coral quality-tier palette RankPill/percentiles use. Severity by
+ *  saturation: Out darkest, Questionable lightest. */
+export function InjuryBadge({ status }: { status: "Out" | "Doubtful" | "Questionable" }) {
+  const style =
+    status === "Out"
+      ? { background: "var(--pct-lo-3)", color: "var(--foreground)" }
+      : status === "Doubtful"
+      ? { background: "var(--pct-lo-2)", color: "var(--ink-secondary)" }
+      : { background: "var(--pct-lo-1)", color: "var(--ink-secondary)" };
+  return (
+    <span
+      className="tabular inline-flex h-[1.3em] min-w-[1.3em] items-center justify-center rounded px-1 text-[10px] font-semibold leading-none"
+      style={style}
+      title={status}
+    >
+      {INJURY_ABBR[status]}
+    </span>
+  );
+}
+
 export const PER_MATCHUP_TAG_LABEL: Record<Exclude<PerMatchupTag, null>, string> = {
   "Points likely": "Points likely",
   "Shutdown likely": "Shutdown likely",

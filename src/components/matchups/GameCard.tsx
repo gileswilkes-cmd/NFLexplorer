@@ -5,11 +5,11 @@ import Link from "next/link";
 import type { GameMatchups, UnitMatchup } from "@/lib/matchups";
 import { formatFinalLine, formatMarketLine, oddsForGame, type OddsDoc } from "@/lib/odds";
 import {
-  computeSpotlightSlots, computeWatchLine,
+  computeSpotlightSlots, computeWatchSlots, formatWatchSlotText, shortName,
   type SpotlightSlot, type SpotlightUnit, type TeamPlayersDoc,
 } from "@/lib/spotlights";
 import type { TeamIndexEntry } from "@/lib/types";
-import { RankPill, gameTagStyle, ordinal } from "./common";
+import { InjuryBadge, RankPill, gameTagStyle, ordinal } from "./common";
 
 type TeamMeta = Record<string, TeamIndexEntry>;
 
@@ -34,7 +34,7 @@ function PlayerLink({ slot }: { slot: SpotlightSlot }) {
   const { player } = slot;
   return (
     <li className="flex flex-col gap-0.5">
-      <span>
+      <span className="flex flex-wrap items-center gap-1.5">
         <Link
           href={`/players/${player.gsis_id}`}
           className="font-medium text-ink-primary hover:underline decoration-hairline underline-offset-4"
@@ -42,8 +42,17 @@ function PlayerLink({ slot }: { slot: SpotlightSlot }) {
         >
           {player.name}
         </Link>
-        <span className="text-ink-muted"> ({player.pos})</span>
+        <span className="text-ink-muted">({player.pos})</span>
+        {player.injury_status && <InjuryBadge status={player.injury_status} />}
       </span>
+      {player.starter_override && player.overridden_starters && player.overridden_starters.length > 0 && (
+        <span className="text-ink-muted">
+          in for{" "}
+          {player.overridden_starters
+            .map((o) => `${shortName(o.name)}${o.injury_status ? ` (${o.injury_status})` : ""}`)
+            .join(", ")}
+        </span>
+      )}
       {player.flag ? (
         <span className="text-ink-muted">{player.note}</span>
       ) : (
@@ -123,7 +132,7 @@ export default function GameCard({ gm, meta, oddsDoc, teamPlayersDoc, week }: {
     : formatMarketLine(odds);
 
   const spotlightSlots = computeSpotlightSlots(gm, teamPlayersDoc);
-  const watchLine = computeWatchLine(spotlightSlots);
+  const watchSlots = computeWatchSlots(spotlightSlots);
 
   const awayPass = matchups.find((m) => m.offTeam === game.away && m.kind === "pass")!;
   const awayRun = matchups.find((m) => m.offTeam === game.away && m.kind === "run")!;
@@ -177,12 +186,18 @@ export default function GameCard({ gm, meta, oddsDoc, teamPlayersDoc, week }: {
           </span>
           {marketLine}
         </p>
-        {watchLine && (
-          <p className="text-sm text-ink-secondary">
+        {watchSlots.length > 0 && (
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-ink-secondary">
             <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
               Watch
             </span>
-            {watchLine}
+            {watchSlots.map((s, i) => (
+              <span key={s.player.gsis_id} className="inline-flex items-center gap-1">
+                {i > 0 && <span className="text-ink-muted">·</span>}
+                <span>{formatWatchSlotText(s)}</span>
+                {s.player.injury_status && <InjuryBadge status={s.player.injury_status} />}
+              </span>
+            ))}
           </p>
         )}
       </div>

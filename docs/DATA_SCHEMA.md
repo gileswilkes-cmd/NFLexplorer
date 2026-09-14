@@ -574,6 +574,77 @@ date. Full-name → code mapping for all 32 teams lives in
 `TEAM_NAME_TO_CODE` in `pull_odds.mjs`; an unrecognized name from the feed
 aborts the script rather than silently dropping that game.
 
+## `matchups/team_players.json` (Matchups product — player spotlights)
+
+Built by `ingest/build_spotlights.py`, folded into `npm run refresh:week`
+(`ingest/refresh_week.ts`) since starters and injuries are this-week facts
+(docs/MATCHUPS_SPOTLIGHTS.md, docs/MATCHUPS_INJURIES.md). Per 2026-roster
+team, the key players by unit: QB and RB are the current **depth-chart**
+starter, overridden by this week's **injury report** when the nominal
+starter is Out/IR; WR/TE and defensive spotlights stay ranked by **2025**
+production but carry the same injury flag. Never touches
+`predictions/week_{N}.json` or the unit-level model — injuries inform
+spotlights only.
+
+```jsonc
+// matchups/team_players.json
+{
+  "schema_version": 1,
+  "roster_season": 2026,
+  "production_season": 2025,
+  "generated_at": "2026-09-14T14:20:00Z",
+  "teams": {
+    "ATL": {
+      "pass_off": {
+        "qb": {
+          "gsis_id": "00-0033662", "name": "Cooper Rush", "pos": "QB",
+          "headline": "311 yds, 2 TD in 4 games", "percentile": 22.1,
+          "team_2025": "DAL", "games_2025": 4, "flag": null,
+          "injury_status": null,         // Rush himself isn't on this week's report
+          "depth_rank": 3,                // QB3 on the current depth chart...
+          "starter_override": true,       // ...promoted because QB1 and QB2 are both Out
+          "overridden_starters": [        // every depth-chart entry skipped, in order, each with its own status
+            { "gsis_id": "00-0039917", "name": "Michael Penix Jr.", "injury_status": "Out" },
+            { "gsis_id": "00-0036212", "name": "Tua Tagovailoa", "injury_status": "Out" }
+          ]
+        },
+        "receivers": [ /* TeamPlayerEntry[], unchanged shape + injury_status */ ]
+      },
+      "run_off": { "rb": { /* TeamPlayerEntry, same QB-style fields */ } },
+      "pass_def": { "rusher": { /* … */ }, "db": { /* … or null, optional slot */ } },
+      "run_def": { "tackler": { /* … or null, optional slot */ } }
+    }
+    // … one entry per team
+  }
+}
+```
+
+**`TeamPlayerEntry`** (`src/lib/spotlights.ts`):
+- `flag: "no_2025_data" | null` — set instead of a fabricated/zeroed stat line
+  for a rookie or anyone with no 2025 REG record; `headline`/`percentile`/
+  `team_2025`/`games_2025` are absent when `flag` is set.
+- `injury_status: "Out" | "Doubtful" | "Questionable" | null` — this week's
+  `import_injuries` report status for *this* player (the resolved starter,
+  not the nominal one). `null` means not on the report, not "confirmed healthy".
+- `depth_rank` / `starter_override` / `overridden_starters` — **QB and RB
+  entries only**. `starter_override: true` means one or more depth-chart
+  entries ranked above this player were Out/IR this week and this entry is
+  the next-man-up who's actually resolved as the starter; `overridden_starters`
+  lists every one of them, in depth-chart order, each with its own
+  `injury_status` (there can be more than one — QB1 *and* QB2 both Out bumps
+  QB3 in). WR/TE and defensive entries never carry these three fields — those
+  slots stay production-ranked, not depth-chart-ranked.
+
+**Starter resolution (QB/RB only):** depth-chart rank 1, unless this week's
+injury report marks him `Out`/`IR` (`import_injuries` `report_status`, or
+`import_seasonal_rosters` `status == "RES"` — the injury report itself never
+carries an "IR" status string, so reserve/IR roster status is the second
+signal), in which case the next depth-chart entry not Out/IR. If every
+depth-chart entry at that position is Out/IR, falls back to the nominal
+(rank-1) starter rather than showing nobody. `import_depth_charts` returns a
+full multi-month time series (one row per player per scrape `dt`); "current"
+means filtering to the max `dt`, not reading the table as-is.
+
 ## `predictions/week_{N}.json` and `predictions/meta.json` (Matchups product — frozen forecasts)
 
 Written by `ingest/refresh_week.ts` (`npm run refresh:week`, docs/MATCHUPS_REFRESH.md),

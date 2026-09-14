@@ -18,6 +18,20 @@ export interface TeamPlayerEntry {
   games_2025?: number;
   flag: "no_2025_data" | null;
   note?: string;
+  /** this week's injury report status, from import_injuries — null when the
+   *  player isn't on the report at all (docs/MATCHUPS_INJURIES.md) */
+  injury_status?: "Out" | "Doubtful" | "Questionable" | null;
+  /** QB/RB entries only: current depth-chart rank of the resolved starter */
+  depth_rank?: number;
+  /** QB/RB entries only: true when one or more depth-chart entries ranked
+   *  above this player were Out/IR and this entry is the next-man-up who
+   *  actually starts */
+  starter_override?: boolean;
+  /** QB/RB entries only: every depth-chart entry ranked above the resolved
+   *  starter that was Out/IR this week, in depth-chart order (can be more
+   *  than one — e.g. QB1 and QB2 both Out bumps QB3 in); empty when
+   *  starter_override is false */
+  overridden_starters?: { gsis_id: string; name: string; injury_status: string | null }[];
 }
 
 export interface TeamPlayersUnit {
@@ -117,7 +131,7 @@ const WATCH_MIN_PERCENTILE = 50;
 const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv", "v"]);
 
 /** Last name for the compact Watch line — strips a trailing Jr./Sr./II etc. */
-function shortName(fullName: string): string {
+export function shortName(fullName: string): string {
   const parts = fullName.trim().split(/\s+/);
   while (parts.length > 1 && NAME_SUFFIXES.has(parts[parts.length - 1].replace(/\.$/, "").toLowerCase())) {
     parts.pop();
@@ -125,23 +139,25 @@ function shortName(fullName: string): string {
   return parts[parts.length - 1];
 }
 
-/** "Chase (CIN) vs 30th-ranked pass D · Reed (JAX) vs 3rd-ranked run D" — the
- *  top 1-2 slots by score, unit-level framing only (never an implied
- *  1-on-1). Null when nothing clears the bar (most games won't have a
+/** The top 1-2 slots by score, unit-level framing only (never an implied
+ *  1-on-1). Empty when nothing clears the bar (most games won't have a
  *  genuinely notable pairing, and that's fine — no line beats a forced one).
- *  Callers prefix their own "Watch" label to match their layout — GameCard
- *  renders it as a third MODEL/MARKET-style row rather than inline text. */
-export function computeWatchLine(slots: SpotlightSlot[]): string | null {
+ *  Returns slots (not pre-formatted text) so a caller can attach an injury
+ *  badge per player — GameCard renders each as a third MODEL/MARKET-style
+ *  row rather than inline text. */
+export function computeWatchSlots(slots: SpotlightSlot[]): SpotlightSlot[] {
   const qualifying = slots.filter(
     (s) =>
       s.player.percentile != null &&
       s.player.percentile >= WATCH_MIN_PERCENTILE &&
       (s.oppRank <= STRONG_RANK || s.oppRank >= WEAK_RANK)
   );
-  if (qualifying.length === 0) return null;
+  if (qualifying.length === 0) return [];
+  return [...qualifying].sort((a, b) => b.score - a.score).slice(0, 2);
+}
 
-  const top = [...qualifying].sort((a, b) => b.score - a.score).slice(0, 2);
-  return top
-    .map((s) => `${shortName(s.player.name)} (${s.team}) vs ${ordinal(s.oppRank)}-ranked ${s.oppUnitLabel}`)
-    .join(" · ");
+/** "Chase (CIN) vs 30th-ranked pass D" — the text portion of one Watch-line
+ *  slot; the caller adds any injury badge alongside it. */
+export function formatWatchSlotText(slot: SpotlightSlot): string {
+  return `${shortName(slot.player.name)} (${slot.team}) vs ${ordinal(slot.oppRank)}-ranked ${slot.oppUnitLabel}`;
 }

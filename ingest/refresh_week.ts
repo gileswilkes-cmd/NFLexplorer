@@ -9,9 +9,14 @@
 //   2. re-pull import_schedules(2026) -> schedule_2026.json (scores fill in
 //      for played games)
 //   3. re-pull the-odds-api -> odds_2026.json
-//   4. write/refresh public/data/predictions/week_{N}.json for the current
+//   4. re-pull import_depth_charts(2026) + import_injuries(2026) -> rebuild
+//      public/data/matchups/team_players.json (docs/MATCHUPS_INJURIES.md) —
+//      current-week QB/RB starters (with injury override) and injury-status
+//      flags on every spotlight player. Player-agnostic; never touches the
+//      model forecast below.
+//   5. write/refresh public/data/predictions/week_{N}.json for the current
 //      "upcoming" week (defaultWeek(), the same rule /matchups itself uses)
-//   5. print a summary of what changed and stop — nothing is committed here.
+//   6. print a summary of what changed and stop — nothing is committed here.
 //
 // The freeze rule (non-negotiable, see docs/MATCHUPS_REFRESH.md Part 2): a
 // game's forecast is only ever (re)computed while it hasn't kicked off yet
@@ -250,6 +255,16 @@ function main(): void {
   run("node", ["--env-file=.env.local", path.join(REPO_ROOT, "ingest", "pull_odds.mjs")], "refresh odds (the-odds-api)");
   const oddsAfter = readJson<OddsDoc>(ODDS_PATH);
   if (!oddsAfter) throw new Error("odds_2026.json missing after pull_odds.mjs ran");
+
+  // Depth charts + injuries change weekly like schedule/odds, so this is a
+  // weekly-refresh input, not a one-off build step — it runs after the
+  // schedule refresh above (starter resolution reads schedule_2026.json to
+  // find the current week) but doesn't touch predictions/model logic at all.
+  run(
+    pythonExe(),
+    [path.join(REPO_ROOT, "ingest", "build_spotlights.py")],
+    "refresh depth charts + injuries, rebuild spotlights (team_players.json)"
+  );
 
   const ratingsDoc = readJson<UnitRatingsDoc>(RATINGS_PATH);
   if (!ratingsDoc) throw new Error("unit_ratings.json missing");
