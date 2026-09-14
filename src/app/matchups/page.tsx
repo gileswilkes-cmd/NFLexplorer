@@ -6,6 +6,7 @@ import {
   computeWeekMatchups, defaultWeek, type ScheduleDoc, type UnitRatingsDoc,
 } from "@/lib/matchups";
 import type { OddsDoc } from "@/lib/odds";
+import type { TeamPlayersDoc } from "@/lib/spotlights";
 import type { TeamIndex, TeamIndexEntry } from "@/lib/types";
 import GameCard from "@/components/matchups/GameCard";
 
@@ -69,6 +70,7 @@ function MatchupsInner() {
   const [ratingsDoc, setRatingsDoc] = useState<UnitRatingsDoc | null>(null);
   const [teamIndex, setTeamIndex] = useState<TeamIndex | null>(null);
   const [oddsDoc, setOddsDoc] = useState<OddsDoc | null>(null);
+  const [teamPlayersDoc, setTeamPlayersDoc] = useState<TeamPlayersDoc | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -86,6 +88,13 @@ function MatchupsInner() {
       .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
       .then(setOddsDoc)
       .catch(() => setOddsDoc(null));
+
+    // Spotlights are supplementary too — missing team_players.json just
+    // means no Watch line / no player breakdown, not a blocked page.
+    fetch("/data/matchups/team_players.json")
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(setTeamPlayersDoc)
+      .catch(() => setTeamPlayersDoc(null));
   }, []);
 
   const weekParam = params.get("week");
@@ -157,7 +166,14 @@ function MatchupsInner() {
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {games.map((gm) => (
-              <GameCard key={gm.game.game_id} gm={gm} meta={teamMeta} oddsDoc={oddsDoc} week={week} />
+              <GameCard
+                key={gm.game.game_id}
+                gm={gm}
+                meta={teamMeta}
+                oddsDoc={oddsDoc}
+                teamPlayersDoc={teamPlayersDoc}
+                week={week}
+              />
             ))}
           </div>
         </>

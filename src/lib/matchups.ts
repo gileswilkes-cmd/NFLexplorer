@@ -48,8 +48,8 @@ export type UnitKind = "run" | "pass";
 export type PerMatchupTag = "Points likely" | "Shutdown likely" | "Elite clash" | null;
 
 /** Rank tier thresholds from the spec: strong = top 8, weak = bottom 8 (of 32). */
-const STRONG_RANK = 8;
-const WEAK_RANK = 25;
+export const STRONG_RANK = 8;
+export const WEAK_RANK = 25;
 
 export interface UnitMatchup {
   kind: UnitKind;
@@ -223,7 +223,7 @@ export function computeInterestScore(matchups: UnitMatchup[]): number {
   return score;
 }
 
-function ordinal(n: number): string {
+export function ordinal(n: number): string {
   const rem100 = n % 100;
   if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
   switch (n % 10) {
