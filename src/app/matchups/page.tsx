@@ -41,6 +41,10 @@ function RankLegend() {
         bottom 8
       </span>
       <span>left number = offense rank</span>
+      <span>
+        <sup className="text-[9px] font-bold opacity-70">T</sup>/
+        <sup className="text-[9px] font-bold opacity-70">S</sup> = tough/soft 2025 schedule (calibration hint, not a corrected rank)
+      </span>
     </div>
   );
 }

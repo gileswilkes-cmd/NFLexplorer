@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import type { GameMatchups, UnitMatchup } from "@/lib/matchups";
+import type { FullUnitKey, GameMatchups, UnitMatchup } from "@/lib/matchups";
+import { sosSentence } from "@/lib/matchups";
 import { formatFinalLine, formatMarketLine, oddsForGame, type OddsDoc } from "@/lib/odds";
 import {
   computeSpotlightSlots, computeWatchSlots, formatWatchSlotText, shortName,
@@ -109,9 +110,9 @@ function MatchupCell({ m }: { m: UnitMatchup }) {
   return (
     <div className="flex flex-col items-center justify-center gap-1.5 rounded-lg border border-hairline bg-background px-2 py-2.5">
       <div className="flex items-center gap-1.5">
-        <RankPill rank={m.offRank} />
+        <RankPill rank={m.offRank} sos={m.offSos} />
         <span className="text-xs text-ink-muted">v</span>
-        <RankPill rank={m.defRank} />
+        <RankPill rank={m.defRank} sos={m.defSos} />
       </div>
       <span className="tabular text-[17px] font-medium leading-none">{fmtEdge(m.edge)}</span>
     </div>
@@ -138,6 +139,19 @@ export default function GameCard({ gm, meta, oddsDoc, teamPlayersDoc, week }: {
   const awayRun = matchups.find((m) => m.offTeam === game.away && m.kind === "run")!;
   const homePass = matchups.find((m) => m.offTeam === game.home && m.kind === "pass")!;
   const homeRun = matchups.find((m) => m.offTeam === game.home && m.kind === "run")!;
+
+  // Strength-of-schedule detail (docs/MATCHUPS_SOS.md): only flagged
+  // (tough/soft) units get a line, same light-touch rule as the card-face
+  // marker — the 4 matchups cover all 8 team-units (2 teams x 4 units)
+  // exactly once each, split across their offence and defence side.
+  const sosLines = matchups.flatMap((m) => {
+    const offKey = `${m.kind}_off` as FullUnitKey;
+    const defKey = `${m.kind}_def` as FullUnitKey;
+    return [
+      sosSentence(m.offTeam, offKey, m.offSos),
+      sosSentence(m.defTeam, defKey, m.defSos),
+    ].filter((s): s is string => s !== null);
+  });
 
   return (
     <div
@@ -247,6 +261,18 @@ export default function GameCard({ gm, meta, oddsDoc, teamPlayersDoc, week }: {
                 {m.offTeam} {m.kind} O {fmtEpa(m.offEpa)} · {m.defTeam} {m.kind} D allowed{" "}
                 {fmtEpa(m.defEpaAllowed)} (rank {ordinal(m.offRank)} vs {ordinal(m.defRank)})
               </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {expanded && sosLines.length > 0 && (
+        <div className="mt-3 border-t border-hairline pt-3 text-xs text-ink-secondary">
+          <p className="mb-1.5 font-medium text-ink-muted">
+            Strength of schedule — calibration hint, not a corrected rank
+          </p>
+          <ul className="flex flex-col gap-1">
+            {sosLines.map((line) => (
+              <li key={line}>{line}</li>
             ))}
           </ul>
         </div>

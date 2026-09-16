@@ -1,4 +1,4 @@
-import type { GameTag, PerMatchupTag } from "@/lib/matchups";
+import type { GameTag, PerMatchupTag, UnitSos } from "@/lib/matchups";
 
 export function ordinal(n: number): string {
   const rem100 = n % 100;
@@ -26,10 +26,20 @@ export function rankTier3(rank: number): "hi" | "mid" | "lo" {
   return "mid";
 }
 
+function sosMarkerTitle(classification: "tough" | "soft"): string {
+  return classification === "tough"
+    ? "Tough schedule — faced strong opposition in 2025, rank trustworthy (calibration hint, not a corrected rank)"
+    : "Soft schedule — faced weak opposition in 2025, rank likely inflated (calibration hint, not a corrected rank)";
+}
+
 /** Rank pill: bare number, teal (top 8) / coral (bottom 8) / neutral grey
  *  (middle) tint — deliberately not the red/green or blue/red diverging
- *  palette used elsewhere, per the restyle brief (reduced colour vision). */
-export function RankPill({ rank }: { rank: number }) {
+ *  palette used elsewhere, per the restyle brief (reduced colour vision).
+ *  An optional `sos` prop (docs/MATCHUPS_SOS.md) adds a small superscript
+ *  T/S marker for a tough/soft-schedule flag only — neutral units get
+ *  nothing. The marker is deliberately muted (not the tier's hi/lo colour)
+ *  so it never reads as a second quality tint on top of the rank's own. */
+export function RankPill({ rank, sos }: { rank: number; sos?: UnitSos }) {
   const tier = rankTier3(rank);
   const style =
     tier === "hi"
@@ -37,12 +47,19 @@ export function RankPill({ rank }: { rank: number }) {
       : tier === "lo"
       ? { background: "var(--tier-lo-bg)", color: "var(--tier-lo-fg)" }
       : { background: "var(--pct-mid)", color: "var(--ink-secondary)" };
+  const flagged = sos && sos.classification !== "neutral";
   return (
     <span
       className="tabular inline-flex min-w-[2.25em] items-center justify-center rounded-md px-1.5 py-1 text-[16px] font-medium leading-none"
       style={style}
+      title={flagged ? sosMarkerTitle(sos.classification as "tough" | "soft") : undefined}
     >
       {rank}
+      {flagged && (
+        <sup className="ml-0.5 text-[9px] font-bold leading-none opacity-70">
+          {sos.classification === "tough" ? "T" : "S"}
+        </sup>
+      )}
     </span>
   );
 }

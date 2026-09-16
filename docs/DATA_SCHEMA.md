@@ -491,15 +491,30 @@ other changes.
   "season_basis": 2025,
   "teams": {
     "CIN": {
-      "run_off":  { "epa": 0.014, "rank": 6 },          // offense.by_play_type.rush.epa_per_play; rank 1 = best (highest EPA)
-      "pass_off": { "epa": -0.02, "rank": 25 },         // offense.by_play_type.pass.epa_per_play
-      "run_def":  { "epa_allowed": 0.058, "rank": 31 }, // defense.by_play_type.rush.epa_per_play_allowed; rank 1 = best (lowest EPA allowed)
-      "pass_def": { "epa_allowed": 0.18, "rank": 28 }   // defense.by_play_type.pass.epa_per_play_allowed
+      "run_off":  { "epa": 0.014, "rank": 6, "sos": { "avg_opponent_rank": 19.5, "classification": "soft" } },
+      "pass_off": { "epa": -0.02, "rank": 25, "sos": { "avg_opponent_rank": 15.1, "classification": "neutral" } },
+      "run_def":  { "epa_allowed": 0.058, "rank": 31, "sos": { "avg_opponent_rank": 13.8, "classification": "tough" } },
+      "pass_def": { "epa_allowed": 0.18, "rank": 28, "sos": { "avg_opponent_rank": 16.2, "classification": "neutral" } }
     }
     // … 32 teams total
   }
 }
 ```
+`epa`/`epa_allowed`/`rank` are as before (rank 1 = best; offence ranked by
+higher EPA/play, defence by lower EPA/play allowed —
+`offense.by_play_type.{rush,pass}.epa_per_play` and
+`defense.by_play_type.{rush,pass}.epa_per_play_allowed` respectively).
+
+`sos` (docs/MATCHUPS_SOS.md) is a **calibration hint, not a corrected
+rank** — computed once, statically, alongside the ratings (not part of the
+weekly refresh). For each unit, `avg_opponent_rank` is the mean raw rank of
+the *specific opposing unit* (same kind: pass offence -> opposing pass
+defences, etc.) it faced across its 2025 REG-season games; `classification`
+buckets that average into terciles computed separately per unit type across
+all 32 teams — `"tough"` (lowest third of avg-opponent-rank: it faced strong
+opposition, so its own rank is earned or if anything understated),
+`"soft"` (highest third: it faced weak opposition, so its own rank is likely
+inflated), or `"neutral"` (middle third — not flagged in the UI).
 
 ```jsonc
 // matchups/schedule_2026.json — from import_schedules(2026), REG season only

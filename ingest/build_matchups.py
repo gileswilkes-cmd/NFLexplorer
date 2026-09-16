@@ -21,12 +21,20 @@ import nfl_data_py as nfl
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build import DATA_DIR, REPO_ROOT, SCHEMA_VERSION, write_json  # noqa: E402
+from build import DATA_DIR, REPO_ROOT, SCHEMA_VERSION, fetch_schedules, write_json  # noqa: E402
 
 RATINGS_BASIS_SEASON = 2025
 SCHEDULE_SEASON = 2026
 
 UNIT_KEYS = ("run_off", "pass_off", "run_def", "pass_def")
+
+# A unit's SOS looks at the rank of the specific opposing unit it lined up
+# against each week (docs/MATCHUPS_SOS.md) — an offence faces the opposing
+# defence of the same kind, and vice versa.
+OPPOSING_UNIT = {
+    "run_off": "run_def", "pass_off": "pass_def",
+    "run_def": "run_off", "pass_def": "pass_off",
+}
 
 
 def _dig(d: dict, *keys):
@@ -73,21 +81,69 @@ def build_unit_ratings() -> dict:
         ordered = sorted(raw.items(), key=lambda kv: kv[1][metric_key], reverse=higher_is_better)
         return {fr: i + 1 for i, (fr, _) in enumerate(ordered)}
 
-    run_off_ranks = ranks_for("run_off_epa", higher_is_better=True)
-    pass_off_ranks = ranks_for("pass_off_epa", higher_is_better=True)
-    run_def_ranks = ranks_for("run_def_epa", higher_is_better=False)
-    pass_def_ranks = ranks_for("pass_def_epa", higher_is_better=False)
+    unit_ranks = {
+        "run_off": ranks_for("run_off_epa", higher_is_better=True),
+        "pass_off": ranks_for("pass_off_epa", higher_is_better=True),
+        "run_def": ranks_for("run_def_epa", higher_is_better=False),
+        "pass_def": ranks_for("pass_def_epa", higher_is_better=False),
+    }
+
+    sos = build_sos(list(raw.keys()), unit_ranks)
 
     teams = {}
     for fr, v in raw.items():
         teams[fr] = {
-            "run_off": {"epa": v["run_off_epa"], "rank": run_off_ranks[fr]},
-            "pass_off": {"epa": v["pass_off_epa"], "rank": pass_off_ranks[fr]},
-            "run_def": {"epa_allowed": v["run_def_epa"], "rank": run_def_ranks[fr]},
-            "pass_def": {"epa_allowed": v["pass_def_epa"], "rank": pass_def_ranks[fr]},
+            "run_off": {"epa": v["run_off_epa"], "rank": unit_ranks["run_off"][fr], "sos": sos["run_off"][fr]},
+            "pass_off": {"epa": v["pass_off_epa"], "rank": unit_ranks["pass_off"][fr], "sos": sos["pass_off"][fr]},
+            "run_def": {"epa_allowed": v["run_def_epa"], "rank": unit_ranks["run_def"][fr], "sos": sos["run_def"][fr]},
+            "pass_def": {"epa_allowed": v["pass_def_epa"], "rank": unit_ranks["pass_def"][fr], "sos": sos["pass_def"][fr]},
         }
 
     return {"schema_version": SCHEMA_VERSION, "season_basis": RATINGS_BASIS_SEASON, "teams": teams}
+
+
+def build_sos(franchises: list[str], unit_ranks: dict[str, dict[str, int]]) -> dict[str, dict[str, dict]]:
+    """For each team's each unit, the avg raw rank of the opposing units it
+    faced in its 2025 REG-season games (docs/MATCHUPS_SOS.md) — one pass over
+    the already-computed raw ranks, not circular. Classified into terciles
+    per unit type: lowest third of avg-opponent-rank = "tough" (faced strong
+    units), highest third = "soft" (faced weak units), middle = "neutral".
+    """
+    sched = fetch_schedules(RATINGS_BASIS_SEASON)
+    reg = sched[sched["game_type"] == "REG"]
+
+    opponents: dict[str, list[str]] = {fr: [] for fr in franchises}
+    fr_set = set(franchises)
+    for r in reg.itertuples():
+        home, away = r.home_team, r.away_team
+        if home in fr_set and away in fr_set:
+            opponents[home].append(away)
+            opponents[away].append(home)
+
+    missing = [fr for fr, opps in opponents.items() if not opps]
+    if missing:
+        raise SystemExit(f"no {RATINGS_BASIS_SEASON} REG opponents found for: {missing}")
+
+    avg_opp_rank: dict[str, dict[str, float]] = {}
+    for unit in UNIT_KEYS:
+        opp_unit_ranks = unit_ranks[OPPOSING_UNIT[unit]]
+        avg_opp_rank[unit] = {
+            fr: sum(opp_unit_ranks[opp] for opp in opponents[fr]) / len(opponents[fr])
+            for fr in franchises
+        }
+
+    sos: dict[str, dict[str, dict]] = {}
+    for unit in UNIT_KEYS:
+        ordered = sorted(avg_opp_rank[unit].items(), key=lambda kv: kv[1])
+        n = len(ordered)
+        tough_cut = n // 3
+        soft_cut = n - n // 3
+        sos[unit] = {}
+        for i, (fr, avg_rank) in enumerate(ordered):
+            classification = "tough" if i < tough_cut else "soft" if i >= soft_cut else "neutral"
+            sos[unit][fr] = {"avg_opponent_rank": round(avg_rank, 1), "classification": classification}
+
+    return sos
 
 
 def build_schedule() -> dict:

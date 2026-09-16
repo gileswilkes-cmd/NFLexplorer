@@ -3,14 +3,27 @@
 // both read as-is; everything here is computed client-side so a future
 // (offseason-adjusted) unit_ratings.json drops in with zero other changes.
 
+export type SosClassification = "tough" | "soft" | "neutral";
+
+/** Strength-of-schedule for one unit (docs/MATCHUPS_SOS.md) — the avg raw
+ *  rank of the same-kind opposing units it faced in 2025, and a tercile
+ *  classification. A calibration hint on the existing raw rank, not a
+ *  corrected rank. */
+export interface UnitSos {
+  avg_opponent_rank: number;
+  classification: SosClassification;
+}
+
 export interface UnitOffRating {
   epa: number;
   rank: number; // 1 = best in the league
+  sos: UnitSos;
 }
 
 export interface UnitDefRating {
   epa_allowed: number;
   rank: number; // 1 = best (stingiest) in the league
+  sos: UnitSos;
 }
 
 export interface TeamUnitRatings {
@@ -61,6 +74,8 @@ export interface UnitMatchup {
   defRank: number;
   offEpa: number;
   defEpaAllowed: number;
+  offSos: UnitSos;
+  defSos: UnitSos;
   /** defense_rank - offense_rank in offence-favoured terms: positive = offence favoured. */
   edge: number;
   tag: PerMatchupTag;
@@ -114,6 +129,8 @@ function buildUnitMatchup(
     defRank: def.rank,
     offEpa: off.epa,
     defEpaAllowed: def.epa_allowed,
+    offSos: off.sos,
+    defSos: def.sos,
     edge,
     tag: tagForMatchup(off.rank, def.rank),
   };
@@ -232,6 +249,32 @@ export function ordinal(n: number): string {
     case 3: return `${n}rd`;
     default: return `${n}th`;
   }
+}
+
+export type FullUnitKey = "run_off" | "pass_off" | "run_def" | "pass_def";
+
+const SOS_OWN_LABEL: Record<FullUnitKey, string> = {
+  run_off: "run offence", pass_off: "pass offence",
+  run_def: "run defence", pass_def: "pass defence",
+};
+const SOS_OPPONENT_LABEL: Record<FullUnitKey, string> = {
+  run_off: "run defences", pass_off: "pass defences",
+  run_def: "run offences", pass_def: "pass offences",
+};
+
+/** The full SOS sentence for one team's unit (docs/MATCHUPS_SOS.md), e.g.
+ *  "NE's pass defence faced pass offences averaging 22nd — rank likely
+ *  inflated (soft schedule)." Null for a neutral unit — like the card-face
+ *  marker, the expanded detail only calls out units where the schedule
+ *  actually skews the rank, not all 8 per game. Explicitly a calibration
+ *  hint on the existing raw rank, never framed as a corrected one. */
+export function sosSentence(team: string, unitKey: FullUnitKey, sos: UnitSos): string | null {
+  if (sos.classification === "neutral") return null;
+  const avgOrdinal = ordinal(Math.round(sos.avg_opponent_rank));
+  const verdict = sos.classification === "tough"
+    ? "rank earned, if anything understated"
+    : "rank likely inflated";
+  return `${team}'s ${SOS_OWN_LABEL[unitKey]} faced ${SOS_OPPONENT_LABEL[unitKey]} averaging ${avgOrdinal} — ${verdict} (${sos.classification} schedule).`;
 }
 
 /** A team's pass-weighted offensive edge across both its matchups this game
