@@ -167,6 +167,9 @@ export interface BoardEntry {
   /** rate boards only: the raw count and its denominator behind `value` */
   count?: number;
   denom?: number;
+  /** TEAM boards only: that team's games played in this entry's season —
+   *  16/17 for a completed season, smaller for 2026 season-to-date */
+  games?: number;
 }
 
 export interface Board {

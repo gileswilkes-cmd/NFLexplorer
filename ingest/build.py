@@ -1566,10 +1566,50 @@ def build_leaderboards() -> None:
         print(f"  wrote leaderboards/{name} ({n} entries, {p.stat().st_size / 1024:.0f} KB)")
 
 
+def _team_board_meta(tag: str) -> dict:
+    side, key = tag.split(":", 1)
+    negative = team_stat_is_negative(key)
+    return {
+        "label": TEAM_LEADERBOARD_LABELS.get(key, key), "side": side,
+        "style": key.startswith("fingerprint."),  # style axes are NOT quality — UI must not use the quality palette
+        "direction": "asc" if negative else "desc",
+    }
+
+
+def _team_boards_from_candidates(cand: dict[str, list]) -> dict:
+    boards = {}
+    for tag, entries in cand.items():
+        m = _team_board_meta(tag)
+        m["entries"] = _rank_entries(entries, m["direction"] == "asc")
+        boards[tag] = m
+    return boards
+
+
+def _team_candidates_from_season_block(fr: str, name: str, s: dict) -> dict[str, dict]:
+    """One team-season's board candidates, keyed "{side}:{key}" — shared by
+    the persisted-file path (2015-2025, reads teams/{fr}.json) and the
+    in-memory path (2026 season-to-date, reads _team_season_metrics() output
+    directly since teams/{fr}.json has no 2026 entry yet). Every entry
+    carries `games` (docs/DATA_SCHEMA.md) — sample size is part of the
+    leaderboard face, not just a season-to-date caveat, so it isn't
+    special-cased to the 2026 path."""
+    out: dict[str, dict] = {}
+    for side, keys in (("offense", TEAM_RANKABLE_OFF), ("defense", TEAM_RANKABLE_DEF)):
+        for key in keys:
+            v = _dig(s[side], key)
+            if not isinstance(v, (int, float)):
+                continue
+            tag = f"{side}:{key}"
+            out[tag] = {"id": fr, "name": name, "season": s["season"], "value": v, "games": s["games"]}
+    return out
+
+
 def build_team_leaderboards() -> None:
     """Merges a TEAM board into the leaderboard files player boards already
     wrote. Reuses TEAM_RANKABLE_OFF/DEF and team_stat_is_negative() from the
     Phase 3 team stage — same metrics, same direction rule, no new ingest.
+    2015-2025 only (ALL_SEASONS); 2026 season-to-date is a separate path
+    (build_team_leaderboards_2026) since teams/{fr}.json has no 2026 entry.
     """
     print("Building team leaderboards…")
     files = sorted(p for p in (DATA_DIR / "teams").glob("*.json") if p.name != "index.json")
@@ -1580,38 +1620,15 @@ def build_team_leaderboards() -> None:
         doc = json.loads(fp.read_text(encoding="utf-8"))
         fr, name = doc["franchise"], doc["name"]
         for s in doc["seasons"]:
-            for side, keys in (("offense", TEAM_RANKABLE_OFF), ("defense", TEAM_RANKABLE_DEF)):
-                for key in keys:
-                    v = _dig(s[side], key)
-                    if not isinstance(v, (int, float)):
-                        continue
-                    entry = {"id": fr, "name": name, "season": s["season"], "value": v}
-                    tag = f"{side}:{key}"
-                    season_cand[s["season"]][tag].append(entry)
-                    alltime_cand[tag].append(entry)
-
-    def meta_for(tag: str) -> dict:
-        side, key = tag.split(":", 1)
-        negative = team_stat_is_negative(key)
-        return {
-            "label": TEAM_LEADERBOARD_LABELS.get(key, key), "side": side,
-            "style": key.startswith("fingerprint."),  # style axes are NOT quality — UI must not use the quality palette
-            "direction": "asc" if negative else "desc",
-        }
-
-    def team_boards(cand: dict[str, list]) -> dict:
-        boards = {}
-        for tag, entries in cand.items():
-            m = meta_for(tag)
-            m["entries"] = _rank_entries(entries, m["direction"] == "asc")
-            boards[tag] = m
-        return boards
+            for tag, entry in _team_candidates_from_season_block(fr, name, s).items():
+                season_cand[s["season"]][tag].append(entry)
+                alltime_cand[tag].append(entry)
 
     for year in ALL_SEASONS:
         path = DATA_DIR / "leaderboards" / "season" / f"{year}.json"
         doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
             {"schema_version": SCHEMA_VERSION, "season": year, "boards": {}}
-        tb = team_boards(season_cand.get(year, {}))
+        tb = _team_boards_from_candidates(season_cand.get(year, {}))
         if tb:
             doc["boards"]["TEAM"] = tb
         write_json(path, doc)
@@ -1619,12 +1636,53 @@ def build_team_leaderboards() -> None:
     path = DATA_DIR / "leaderboards" / "records.json"
     doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
         {"schema_version": SCHEMA_VERSION, "window": list(LEADERBOARD_WINDOW), "boards": {}}
-    doc["boards"]["TEAM"] = team_boards(alltime_cand)
+    doc["boards"]["TEAM"] = _team_boards_from_candidates(alltime_cand)
     write_json(path, doc)
 
     n = sum(len(v["entries"]) for v in doc["boards"]["TEAM"].values())
     print(f"  merged TEAM board into season/{{year}}.json + records.json ({n} all-time entries, "
           f"{len(doc['boards']['TEAM'])} categories)")
+
+
+def build_team_leaderboards_2026() -> None:
+    """Season-to-date TEAM board for the current (in-progress) season, kept
+    OUT of ALL_SEASONS/records.json/career.json deliberately: those are the
+    2015-2025 window everywhere else in this file (LEADERBOARD_WINDOW,
+    WINDOW_LABEL in the TS layer), and 2026 is a partial season, not a
+    completed one eligible for "best seasons ever" or career pooling.
+
+    Computes directly from _team_season_metrics(2026) — the exact same
+    function and metric definitions Phase 3a uses for 2015-2025 — rather than
+    reading teams/{fr}.json, which has no 2026 entry (this deliberately does
+    NOT write one; team pages are out of scope for this leaderboards change).
+    Writes ONLY the "TEAM" key of leaderboards/season/2026.json, leaving any
+    other position boards in that file (there are none yet) untouched.
+    """
+    print("Building 2026 team leaderboard (season-to-date)…")
+    metrics = _team_season_metrics(2026)
+    if not metrics:
+        print("  no 2026 PBP rows yet — skipping")
+        return
+
+    desc = fetch_team_desc().set_index("team_abbr")  # same source/lookup build_team_files uses for "name"
+    season_cand: dict[str, list] = defaultdict(list)
+    games_by_team: dict[str, int] = {}
+    for fr, block in metrics.items():
+        games_by_team[fr] = block["games"]
+        name = desc.loc[fr].team_name if fr in desc.index else fr
+        for tag, entry in _team_candidates_from_season_block(fr, name, block).items():
+            season_cand[tag].append(entry)
+
+    path = DATA_DIR / "leaderboards" / "season" / "2026.json"
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
+        {"schema_version": SCHEMA_VERSION, "season": 2026, "boards": {}}
+    doc["boards"]["TEAM"] = _team_boards_from_candidates(season_cand)
+    write_json(path, doc)
+
+    games_vals = sorted(games_by_team.values())
+    n = sum(len(v["entries"]) for v in doc["boards"]["TEAM"].values())
+    print(f"  wrote leaderboards/season/2026.json ({n} entries, {len(doc['boards']['TEAM'])} categories, "
+          f"{len(games_by_team)} teams, games/team range {games_vals[0]}-{games_vals[-1]})")
 
 
 # --- Phase 4 Part 2: league-evolution trends ---------------------------------
@@ -1902,6 +1960,9 @@ def main() -> None:
                         help="run ONLY the team stage; pick sample franchises from the data")
     parser.add_argument("--leaderboards", action="store_true",
                         help="run ONLY the leaderboard stage (reads existing players/teams/seasons JSON, no ingest)")
+    parser.add_argument("--leaderboards-2026", action="store_true",
+                        help="run ONLY the 2026 season-to-date TEAM leaderboard (fresh PBP pull, "
+                             "writes leaderboards/season/2026.json TEAM board only)")
     parser.add_argument("--trends", action="store_true",
                         help="run ONLY the league-trends stage (reads cached PBP, no player/team rebuild)")
     args = parser.parse_args()
@@ -1912,6 +1973,10 @@ def main() -> None:
 
     if args.trends:
         build_trends()
+        return
+
+    if args.leaderboards_2026:
+        build_team_leaderboards_2026()
         return
 
     if args.leaderboards:

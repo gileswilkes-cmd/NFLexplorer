@@ -8,9 +8,18 @@ import {
   needsWindowLabel, qualifierText, rateContext, scopePath, type Scope,
 } from "@/lib/leaderboards";
 import type { LeaderboardDoc } from "@/lib/types";
+import TeamsWideTable from "@/components/leaderboards/TeamsWideTable";
 
-const SEASONS = Array.from({ length: 11 }, (_, i) => 2015 + i);
-const LATEST = SEASONS[SEASONS.length - 1];
+// 2026 is season-to-date, TEAM only (docs/DATA_SCHEMA.md) — no player boards
+// exist for it yet, so it's still offered in the Season dropdown for every
+// position (groupsIn() naturally narrows the Position dropdown to just
+// "Teams" once a doc with only a TEAM board loads), but the DEFAULT season
+// only jumps to 2026 for the Teams view; every other position's default
+// stays 2025, unaffected.
+const SEASONS = Array.from({ length: 12 }, (_, i) => 2015 + i);
+const LATEST_PLAYER_SEASON = 2025;
+const LATEST_TEAM_SEASON = 2026;
+const defaultSeasonFor = (group: string) => (group === "TEAM" ? LATEST_TEAM_SEASON : LATEST_PLAYER_SEASON);
 
 const isScope = (s: string | null): s is Scope =>
   s === "season" || s === "records" || s === "career";
@@ -37,8 +46,8 @@ function LeaderboardsInner() {
   const router = useRouter();
 
   const scope: Scope = isScope(params.get("scope")) ? (params.get("scope") as Scope) : "season";
-  const season = Number(params.get("season")) || LATEST;
   const wantGroup = params.get("group") ?? "QB";
+  const season = Number(params.get("season")) || defaultSeasonFor(wantGroup);
   const wantStat = params.get("stat") ?? "";
 
   // Keyed by the file being fetched, so the effect only ever setStates from its
@@ -79,6 +88,11 @@ function LeaderboardsInner() {
   const stat = stats.includes(wantStat) ? wantStat : stats[0] ?? "";
   const board = doc?.boards[group]?.[stat] ?? null;
 
+  // The wide table replaces the single-stat view for single-season Teams
+  // only — records/career Teams (multi-season pooling) keep the existing
+  // one-stat-at-a-time behaviour this pass (step 12).
+  const isTeamsWide = scope === "season" && group === "TEAM" && !!doc?.boards.TEAM;
+
   const qualifier = qualifierText(board?.qualifier ?? null);
   const showWindow = needsWindowLabel(scope);
   const scopeMeta = SCOPES.find((s) => s.key === scope)!;
@@ -104,11 +118,15 @@ function LeaderboardsInner() {
         <Select label="Position" value={group} onChange={(v) => setParams({ group: v, stat: null })}>
           {groups.map((g) => <option key={g} value={g}>{GROUP_LABELS[g] ?? g}</option>)}
         </Select>
-        <Select label="Stat" value={stat} onChange={(v) => setParams({ stat: v })}>
-          {stats.map((s) => (
-            <option key={s} value={s}>{doc?.boards[group]?.[s]?.label ?? s}</option>
-          ))}
-        </Select>
+        {/* The wide table has one column per stat — a single-stat dropdown is
+            redundant on top of that, so it's hidden rather than shown inert. */}
+        {!isTeamsWide && (
+          <Select label="Stat" value={stat} onChange={(v) => setParams({ stat: v })}>
+            {stats.map((s) => (
+              <option key={s} value={s}>{doc?.boards[group]?.[s]?.label ?? s}</option>
+            ))}
+          </Select>
+        )}
       </div>
 
       {/* ⚠️ Mandatory: career and all-time numbers are window-truncated, and
@@ -123,7 +141,9 @@ function LeaderboardsInner() {
       {error && <p className="text-ink-muted">Couldn&apos;t load that leaderboard.</p>}
       {!doc && !error && <p className="text-ink-muted">Loading…</p>}
 
-      {board && (
+      {isTeamsWide && doc && <TeamsWideTable teamBoards={doc.boards.TEAM} season={season} />}
+
+      {!isTeamsWide && board && (
         <section>
           <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <h2 className="text-lg font-semibold">
@@ -199,7 +219,7 @@ function LeaderboardsInner() {
         </section>
       )}
 
-      {doc && !board && !error && (
+      {!isTeamsWide && doc && !board && !error && (
         <p className="text-ink-muted">No board for that combination.</p>
       )}
     </main>

@@ -406,7 +406,46 @@ Team entries use the same shape with `id` = franchise code (linking to
 `"side": "offense"|"defense"` and `"style": true|false` — a `style` board
 (the six fingerprint axes) must **never** use the red/blue quality palette
 (see the Phase 3b style-vs-quality rule) since a high PROE means "more
-pass-happy", not "better".
+pass-happy", not "better". Every TEAM entry also carries `"games": N` —
+that team's games played in the entry's season (16 for a pre-2021 season, 17
+from 2021, fewer for 2026 season-to-date) — added retroactively to all
+existing TEAM entries (2015–2025 + records.json), additive, no bump.
+
+### `leaderboards/season/2026.json` — season-to-date, TEAM only
+
+Built by a separate path (`ingest/build.py --leaderboards-2026`, not the
+`--leaderboards` stage above) because **2026 is deliberately outside
+`ALL_SEASONS`/`LEADERBOARD_WINDOW` (2015–2025)** — it's an in-progress
+season, not eligible for `records.json`/`career.json` pooling, and
+`teams/{franchise}.json` has no 2026 entry (team pages are out of scope for
+this build; adding a 2026 team-page entry was a separate, un-taken decision).
+Computes directly from `_team_season_metrics(2026)` — the exact same
+function and metric definitions Phase 3a uses for 2015–2025 — rather than
+reading a persisted team file. `boards` has only `"TEAM"`; there is no
+player-position data for 2026 in this file. Re-run to refresh as the season
+progresses; each run recomputes from fresh PBP (no freeze/merge — this
+mirrors the matchups product's `captured`-until-kickoff pattern only in
+spirit, not in mechanism, since a leaderboard has no "kickoff" to freeze at).
+
+```jsonc
+// leaderboards/season/2026.json
+{
+  "schema_version": 1,
+  "season": 2026,
+  "boards": {
+    "TEAM": {
+      "offense:summary.epa_per_play": {
+        "label": "EPA per play", "side": "offense", "style": false, "direction": "desc",
+        "entries": [
+          { "id": "CHI", "name": "Chicago Bears", "season": 2026, "value": 0.409, "games": 1, "rank": 1 }
+          // … 32 teams, games currently 1-2 depending on bye/Thursday scheduling
+        ]
+      }
+      // … all 20 TEAM_RANKABLE_OFF/DEF categories, same set as every other season
+    }
+  }
+}
+```
 
 **Correctness rules baked into the build (`ingest/build.py`), not the UI:**
 

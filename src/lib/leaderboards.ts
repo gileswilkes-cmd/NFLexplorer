@@ -102,3 +102,140 @@ export function groupsIn(doc: LeaderboardDoc): string[] {
   const order = Object.keys(GROUP_LABELS);
   return order.filter((g) => doc.boards[g] && Object.keys(doc.boards[g]).length > 0);
 }
+
+// --- Teams wide table (single-season TEAM scope) ----------------------------
+// Column config for the wide, Excel-like Teams table. Reads the exact same
+// TEAM boards every single-stat board reads — no new data, no re-ranking
+// (every column's `rank` comes straight from the board's own `_rank_entries`
+// output, docs/DATA_SCHEMA.md).
+
+export type TeamColumnGroup = "offence" | "defence" | "overall" | "style";
+
+export interface TeamColumnDef {
+  /** board tag: "{offense|defense}:{dotted key}", matches `formatBoardValue`'s key format */
+  tag: string;
+  short: string;
+  group: TeamColumnGroup;
+}
+
+// Local-only style override for THIS table. `board.style` (from
+// ingest/build.py) only flags a key style when it starts with "fingerprint." —
+// these two tags are tendency/pace axes by the same reasoning (pace isn't
+// quality; a scheme tendency isn't quality) but the prefix check misses them.
+// Overridden here rather than in the Python metadata so the correction stays
+// scoped to this table; every single-stat board elsewhere still reads
+// `style: false` for these two, unchanged.
+const STYLE_OVERRIDE_TAGS = new Set<string>([
+  "offense:summary.plays_per_game",        // pace, not quality
+  "offense:scheme_splits.deep_shots.rate", // tendency axis, same family as the fingerprint ones
+]);
+
+/** Whether a column should render as a style (tendency) column in the wide
+ *  table — no heatmap shading, ever, regardless of direction. */
+export function isStyleColumn(tag: string, boardStyle: boolean | undefined): boolean {
+  return Boolean(boardStyle) || STYLE_OVERRIDE_TAGS.has(tag);
+}
+
+export const TEAM_GROUP_LABELS: Record<TeamColumnGroup, string> = {
+  offence: "Offence", defence: "Defence", overall: "Overall", style: "Style",
+};
+
+/** Ordered, grouped column list (approved gate report + column-config
+ *  ruling). The four unit-EPA columns are the spine, placed first — the
+ *  Overall "allowed" summary columns partly restate them, so they sit right
+ *  of the spine rather than competing for first eyeshot. Style (tendency,
+ *  never shaded) sits furthest right. `group` here is the wide table's OWN
+ *  grouping (Offence/Defence = the spine only; every other offense- or
+ *  defense-side summary stat is "overall"), distinct from each board's own
+ *  `side` field. */
+export const TEAM_COLUMNS: TeamColumnDef[] = [
+  { tag: "offense:by_play_type.pass.epa_per_play", short: "Pass EPA off", group: "offence" },
+  { tag: "offense:by_play_type.rush.epa_per_play", short: "Rush EPA off", group: "offence" },
+  { tag: "defense:by_play_type.pass.epa_per_play_allowed", short: "Pass EPA def", group: "defence" },
+  { tag: "defense:by_play_type.rush.epa_per_play_allowed", short: "Rush EPA def", group: "defence" },
+
+  { tag: "offense:summary.points_per_game", short: "Points/G", group: "overall" },
+  { tag: "defense:summary.points_allowed_per_game", short: "Pts allow/G", group: "overall" },
+  { tag: "offense:summary.epa_per_play", short: "EPA/play", group: "overall" },
+  { tag: "defense:summary.epa_per_play_allowed", short: "EPA/play def", group: "overall" },
+  { tag: "offense:summary.success_rate", short: "Success%", group: "overall" },
+  { tag: "defense:summary.success_rate_allowed", short: "Success% def", group: "overall" },
+  { tag: "offense:summary.yds_per_game", short: "Yards/G", group: "overall" },
+  { tag: "defense:summary.yds_allowed_per_game", short: "Yards/G def", group: "overall" },
+  { tag: "defense:explosive_rate_allowed", short: "Explosive% def", group: "overall" },
+  { tag: "defense:sack_rate", short: "Sack%", group: "overall" },
+
+  { tag: "offense:summary.plays_per_game", short: "Plays/G", group: "style" },
+  { tag: "offense:fingerprint.proe", short: "PROE", group: "style" },
+  { tag: "offense:fingerprint.early_down_pass_rate", short: "ED pass%", group: "style" },
+  { tag: "offense:fingerprint.shotgun_rate", short: "Shotgun%", group: "style" },
+  { tag: "offense:fingerprint.adot", short: "ADOT", group: "style" },
+  { tag: "offense:scheme_splits.deep_shots.rate", short: "Deep-shot%", group: "style" },
+  { tag: "offense:fingerprint.neutral_pace_sec", short: "Pace (s)", group: "style" },
+];
+
+export interface TeamRowCell {
+  value: number;
+  rank: number;
+  games: number;
+}
+
+export interface TeamRow {
+  id: string;
+  name: string;
+  /** min across every column that has a value this season — the honest
+   *  per-row sample size; a row can have fewer games recorded on a column
+   *  that dropped out (e.g. neutral_pace_sec's own 50-sample floor) than on
+   *  the rest, so this is a floor, not a single authoritative count. */
+  games: number;
+  cells: Record<string, TeamRowCell>;
+}
+
+/** One row per team, every configured column populated where the board has
+ *  it — reads `boards.TEAM` as-is, no re-ranking, no re-aggregation. A
+ *  missing column for a team (or for the whole season, like
+ *  fingerprint.neutral_pace_sec before ~50 qualifying snaps accumulate)
+ *  just leaves that cell absent; callers render "—". */
+export function teamTableRows(teamBoards: Record<string, Board>): TeamRow[] {
+  const byId = new Map<string, TeamRow>();
+  for (const col of TEAM_COLUMNS) {
+    const board = teamBoards[col.tag];
+    if (!board) continue;
+    for (const e of board.entries) {
+      let row = byId.get(e.id);
+      if (!row) {
+        row = { id: e.id, name: e.name, games: e.games ?? 0, cells: {} };
+        byId.set(e.id, row);
+      }
+      row.cells[col.tag] = { value: e.value, rank: e.rank, games: e.games ?? 0 };
+      if (e.games !== undefined) row.games = Math.min(row.games, e.games);
+    }
+  }
+  return [...byId.values()];
+}
+
+function escapeDelimited(v: string, delimiter: string): string {
+  return v.includes(delimiter) || v.includes('"') || v.includes("\n")
+    ? `"${v.replace(/"/g, '""')}"`
+    : v;
+}
+
+/** Team name, Games, then one column per TEAM_COLUMNS entry, in `rows`'
+ *  given order (the caller's current sort) — used by both the copy-as-TSV
+ *  and download-CSV affordances so they always agree with what's on screen. */
+export function teamTableToDelimited(rows: TeamRow[], delimiter: "\t" | ","): string {
+  const header = ["Team", "Games", ...TEAM_COLUMNS.map((c) => c.short)];
+  const lines = [header.join(delimiter)];
+  for (const row of rows) {
+    const cells = [
+      row.name,
+      String(row.games),
+      ...TEAM_COLUMNS.map((c) => {
+        const cell = row.cells[c.tag];
+        return cell === undefined ? "" : String(cell.value);
+      }),
+    ];
+    lines.push(cells.map((v) => escapeDelimited(v, delimiter)).join(delimiter));
+  }
+  return lines.join("\n");
+}
