@@ -3,12 +3,15 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  computeWeekMatchups, defaultWeek, type ScheduleDoc, type UnitRatingsDoc,
+  computeSlateStrip, computeWeekDivergence, defaultWeek, ordinal,
+  type GameWithDivergence, type ScheduleDoc, type SlateStrip, type UnitRatingsDoc,
 } from "@/lib/matchups";
 import type { OddsDoc } from "@/lib/odds";
 import type { TeamPlayersDoc } from "@/lib/spotlights";
 import type { TeamIndex, TeamIndexEntry } from "@/lib/types";
 import GameCard from "@/components/matchups/GameCard";
+
+type SortMode = "divergence" | "kickoff";
 
 function Select({ label, value, onChange, children }: {
   label: string; value: string; onChange: (v: string) => void; children: React.ReactNode;
@@ -47,6 +50,53 @@ function RankLegend() {
       </span>
     </div>
   );
+}
+
+// The week's 4 headline superlatives (docs/... divergence sort), each
+// pointing at one game — a scan-in-5-seconds summary above the card list.
+// Text only for now; not clickable (no in-page anchors to jump to yet).
+function SlateStripView({ strip }: { strip: SlateStrip }) {
+  const items: { label: string; content: string }[] = [];
+  if (strip.topDivergence) {
+    items.push({
+      label: "Biggest divergence",
+      content: `${strip.topDivergence.away} @ ${strip.topDivergence.home}`,
+    });
+  }
+  if (strip.sharpestUnitMismatch) {
+    const s = strip.sharpestUnitMismatch;
+    items.push({
+      label: "Sharpest unit mismatch",
+      content: `${s.offTeam} ${s.kind} O (${ordinal(s.offRank)}) vs ${s.defTeam} ${s.kind} D (${ordinal(s.defRank)})`,
+    });
+  }
+  if (strip.highestMarketTotal) {
+    items.push({
+      label: "Highest total",
+      content: `${strip.highestMarketTotal.away} @ ${strip.highestMarketTotal.home} · ${strip.highestMarketTotal.value} pts`,
+    });
+  }
+  if (strip.lowestMarketTotal) {
+    items.push({
+      label: "Lowest total",
+      content: `${strip.lowestMarketTotal.away} @ ${strip.lowestMarketTotal.home} · ${strip.lowestMarketTotal.value} pts`,
+    });
+  }
+  if (items.length === 0) return null;
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {items.map((it) => (
+        <div key={it.label} className="rounded-lg border border-hairline bg-surface px-3 py-2.5">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">{it.label}</p>
+          <p className="mt-1 text-sm text-ink-secondary">{it.content}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TierHeading({ children }: { children: React.ReactNode }) {
+  return <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">{children}</h2>;
 }
 
 function weekDateRange(games: { date: string }[]): string {
@@ -126,10 +176,37 @@ function MatchupsInner() {
     return out;
   }, [teamIndex]);
 
-  const games = useMemo(
-    () => (scheduleDoc && ratingsDoc ? computeWeekMatchups(week, scheduleDoc, ratingsDoc) : []),
-    [scheduleDoc, ratingsDoc, week]
+  // The week's games with model-vs-market divergence computed and tiered
+  // (hero/standard/tail) — odds are supplementary elsewhere on this page, but
+  // here they're a real input: a game with no line can't be divergence-ranked
+  // (computeWeekDivergence handles that by tiering it "tail" with a null
+  // divergenceZ, never crashing on missing odds).
+  const weekGames = useMemo(
+    () => (scheduleDoc && ratingsDoc ? computeWeekDivergence(week, scheduleDoc, ratingsDoc, oddsDoc) : []),
+    [scheduleDoc, ratingsDoc, oddsDoc, week]
   );
+
+  const slateStrip = useMemo(
+    () => computeSlateStrip(weekGames, oddsDoc, week),
+    [weekGames, oddsDoc, week]
+  );
+
+  const sortParam = params.get("sort");
+  const sort: SortMode = sortParam === "kickoff" ? "kickoff" : "divergence";
+
+  // Kickoff order intentionally mixes tiers (that's the point of browsing by
+  // time instead), so it's a flat list; divergence order keeps the
+  // hero/standard/tail grouping used to render real visual weight.
+  const kickoffGames: GameWithDivergence[] = useMemo(() => {
+    if (sort !== "kickoff") return [];
+    return [...weekGames].sort((a, b) =>
+      a.game.date < b.game.date ? -1 : a.game.date > b.game.date ? 1 : a.game.game_id.localeCompare(b.game.game_id)
+    );
+  }, [weekGames, sort]);
+
+  const heroGames = weekGames.filter((g) => g.divergence.tier === "hero");
+  const standardGames = weekGames.filter((g) => g.divergence.tier === "standard");
+  const tailGames = weekGames.filter((g) => g.divergence.tier === "tail");
 
   const loading = !scheduleDoc || !ratingsDoc || !teamIndex;
 
@@ -137,7 +214,9 @@ function MatchupsInner() {
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-10">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Matchups</h1>
-        <p className="text-sm text-ink-muted">2026 season · sorted by interest</p>
+        <p className="text-sm text-ink-muted">
+          2026 season · sorted by {sort === "kickoff" ? "kickoff time" : "model-vs-market divergence"}
+        </p>
       </div>
 
       <HonestyCaption />
@@ -164,22 +243,88 @@ function MatchupsInner() {
                 </option>
               ))}
             </Select>
+            <Select
+              label="Sort"
+              value={sort}
+              onChange={(v) => {
+                const q = new URLSearchParams(params.toString());
+                q.set("sort", v);
+                router.replace(`/matchups?${q}`);
+              }}
+            >
+              <option value="divergence">Divergence (model vs. market)</option>
+              <option value="kickoff">Kickoff time</option>
+            </Select>
           </div>
 
-          {games.length === 0 && <p className="text-ink-muted">No games found for week {week}.</p>}
+          {weekGames.length === 0 && <p className="text-ink-muted">No games found for week {week}.</p>}
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {games.map((gm) => (
-              <GameCard
-                key={gm.game.game_id}
-                gm={gm}
-                meta={teamMeta}
-                oddsDoc={oddsDoc}
-                teamPlayersDoc={teamPlayersDoc}
-                week={week}
-              />
-            ))}
-          </div>
+          <SlateStripView strip={slateStrip} />
+
+          {sort === "kickoff" ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {kickoffGames.map((gm) => (
+                <div key={gm.game.game_id} className={gm.divergence.tier === "hero" ? "md:col-span-2" : ""}>
+                  <GameCard
+                    gm={gm}
+                    meta={teamMeta}
+                    oddsDoc={oddsDoc}
+                    teamPlayersDoc={teamPlayersDoc}
+                    week={week}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-5">
+              {heroGames.map((gm) => (
+                <GameCard
+                  key={gm.game.game_id}
+                  gm={gm}
+                  meta={teamMeta}
+                  oddsDoc={oddsDoc}
+                  teamPlayersDoc={teamPlayersDoc}
+                  week={week}
+                />
+              ))}
+
+              {standardGames.length > 0 && (
+                <div className="flex flex-col gap-3">
+                  <TierHeading>Also diverges from the market</TierHeading>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {standardGames.map((gm) => (
+                      <GameCard
+                        key={gm.game.game_id}
+                        gm={gm}
+                        meta={teamMeta}
+                        oddsDoc={oddsDoc}
+                        teamPlayersDoc={teamPlayersDoc}
+                        week={week}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {tailGames.length > 0 && (
+                <div className="flex flex-col gap-3">
+                  <TierHeading>Rest of the slate</TierHeading>
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {tailGames.map((gm) => (
+                      <GameCard
+                        key={gm.game.game_id}
+                        gm={gm}
+                        meta={teamMeta}
+                        oddsDoc={oddsDoc}
+                        teamPlayersDoc={teamPlayersDoc}
+                        week={week}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </main>

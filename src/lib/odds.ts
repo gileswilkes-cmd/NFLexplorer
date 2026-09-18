@@ -30,6 +30,15 @@ export function oddsForGame(oddsDoc: OddsDoc | null, week: string, gameId: strin
   return game?.odds ?? null;
 }
 
+/** Market spread oriented toward the home team: positive = home favoured,
+ *  negative = away favoured, 0 = pick'em. Null when no line is posted yet —
+ *  callers must not treat that as a pick'em 0, it means "no data". */
+export function marketSpreadHome(odds: GameOdds | null, home: string): number | null {
+  if (!odds) return null;
+  if (!odds.favorite) return 0;
+  return odds.favorite === home ? odds.spread : -odds.spread;
+}
+
 /** "LAC favoured by 9.5 · ~48 pts expected", "Pick 'em · ~41 pts expected" or
  *  "Lines not yet posted". Plain language, no bettor conventions (no "-9.5",
  *  no "O/U") — the exact total is still available via the returned `exactTotal`

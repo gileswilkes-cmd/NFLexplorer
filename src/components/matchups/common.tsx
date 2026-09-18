@@ -1,4 +1,4 @@
-import type { GameTag, PerMatchupTag, UnitSos } from "@/lib/matchups";
+import type { DivergenceTier, GameTag, PerMatchupTag, UnitSos } from "@/lib/matchups";
 
 export function ordinal(n: number): string {
   const rem100 = n % 100;
@@ -99,7 +99,10 @@ export const PER_MATCHUP_TAG_LABEL: Record<Exclude<PerMatchupTag, null>, string>
 
 /** Game-tag chip styling — deliberately distinct hues per tag so the card
  *  scans at a glance; not the quality palette (these describe game
- *  character, not team quality). */
+ *  character, not team quality). Independent of divergence tier by design:
+ *  a tail card (model and market agree) can still carry a loud "Shootout"
+ *  chip — the chip describes how the game should play, the tier describes
+ *  how much model and market disagree about it, and the two are unrelated. */
 export function gameTagStyle(tag: GameTag): { background: string; color?: string } {
   switch (tag) {
     case "Shootout": return { background: "var(--pct-hi-1)" };
@@ -108,4 +111,25 @@ export function gameTagStyle(tag: GameTag): { background: string; color?: string
     case "Lopsided": return { background: "var(--pct-hi-2)" };
     case "Even": return { background: "var(--pct-mid)" };
   }
+}
+
+/** Divergence-tier badge text — shown once per card, distinct from the
+ *  game-character chips above. Null for "standard" (card size alone carries
+ *  it) and "tail" with a market line (no badge needed; a quiet card is the
+ *  signal). A tail card with NO market line gets its own badge below instead
+ *  (see NoLineBadge) so it reads "unranked", not "we checked and it's low". */
+export function divergenceTierBadge(tier: DivergenceTier): string | null {
+  if (tier === "hero") return "Top divergence this week";
+  return null;
+}
+
+/** Distinct from every quality/character palette used elsewhere — flat grey,
+ *  no hue — because "no market line" is a data-availability fact, not a
+ *  ranking signal. Must not read as "low interest" (docs: JC/UI review). */
+export function NoLineBadge() {
+  return (
+    <span className="rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-muted">
+      No market line
+    </span>
+  );
 }

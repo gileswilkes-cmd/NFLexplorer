@@ -670,32 +670,69 @@ same rule `/matchups` itself uses for its default week. Nothing else is
 touched; a fully-past week's file is simply never revisited once the
 "upcoming" week moves on.
 
+**`schema_version` 2 (bumped from 1) marks the divergence era.** `week_1.json`
+predates the divergence sort and stays at `schema_version: 1` forever — frozen,
+untouched, no `divergence`/`slate_strip` keys at all (not even `null`; the keys
+are simply absent). `week_2.json` onward is `schema_version: 2` and always
+carries both. A look-back reader tells the two apart by this field, not by
+probing for key presence.
+
 ```jsonc
-// predictions/week_1.json
+// predictions/week_2.json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "season": 2026,
-  "week": 1,
-  "captured_at": "2026-09-13T21:36:49.283Z",
+  "week": 2,
+  "captured_at": "2026-09-18T14:02:11.000Z",
   "games": [
     {
-      "game_id": "2026_01_ARI_LAC", "away": "ARI", "home": "LAC", "kickoff": "2026-09-13",
+      "game_id": "2026_02_CAR_ATL", "away": "CAR", "home": "ATL", "kickoff": "2026-09-20",
       "model": {
-        "favourite": "LAC", "lean": "clear",   // "even" | "edge" | "clear" — same buckets the verdict prose uses
-        "margin_est": 48,                      // rounded |pass-weighted offensive-edge diff| — a lean magnitude,
-                                                // NOT a predicted scoreline (the product never predicts one)
+        "favourite": "ATL", "lean": "even",     // "even" | "edge" | "clear" — same buckets the verdict prose uses
+        "margin_est": 5,                        // rounded |pass-weighted offensive-edge diff| — a lean magnitude,
+                                                 // NOT a predicted scoreline (the product never predicts one)
         "tags": ["Even"], "verdict": "…frozen verdict text, byte-for-byte what the card showed at capture time…"
       },
-      "market": { "favourite": "LAC", "spread": 2.5, "total": 45.5, "book": "draftkings" },
+      "market": { "favourite": "CAR", "spread": 2.5, "total": 43.5, "book": "draftkings" },
+      // Model-vs-market divergence (the /matchups sort spine) at capture time — added
+      // alongside `model`/`market` above, same freeze rule, same absence on a
+      // `captured: false` entry. `model_net` is the UNWEIGHTED home-oriented edge sum
+      // (deliberately not the pass-weighted `model.margin_est` — a distinct, simpler
+      // sort key, see src/lib/matchups.ts computeModelNet). `*_z` fields and `tier` are
+      // null/"tail" together when `market_spread_home` is null (no line posted — the
+      // game was never ranked against a market, not "ranked low").
+      "divergence": {
+        "model_net": 15, "market_spread_home": -2.5,
+        "model_z": 0.33, "market_z": -1.19, "divergence_z": 1.52,
+        "tier": "hero",                      // "hero" | "standard" | "tail"
+        "model_lean": "ATL", "market_lean": "CAR"   // team code, or null (dead-even model / pick'em market)
+      },
       "captured": true
     },
     {
       "game_id": "2026_01_NE_SEA", "away": "NE", "home": "SEA", "kickoff": "2026-09-09",
-      "captured": false   // played before this pipeline ever ran for week 1 — no `model`/`market` keys at
-                           // all, never reconstructed; the honest record starts from the first week captured
+      "captured": false   // played before this pipeline ever ran for its week — no `model`/`market`/`divergence`
+                           // keys at all, never reconstructed; the honest record starts from the first week captured
     }
     // … one entry per game in the week
-  ]
+  ],
+  // The week's 4 divergence-sort superlatives (docs/... divergence sort), captured
+  // once for the whole slate. Freezes at the FIRST kickoff of the week, not the
+  // last — the week-level mirror of the per-game freeze rule above. Freely
+  // recomputed while no game in the week has kicked off; the run that first
+  // observes any score locks it in at that run's read and never recomputes again.
+  // A last-kickoff version would blend in games that had already played, which
+  // isn't an ex ante claim. Total superlatives are market-total-only for now (no
+  // model-side total yet).
+  "slate_strip": {
+    "top_divergence": { "game_id": "2026_02_CAR_ATL", "away": "CAR", "home": "ATL", "value": 1.52 },
+    "sharpest_unit_mismatch": {
+      "game_id": "2026_02_GB_NYJ", "away": "GB", "home": "NYJ", "value": 30,
+      "kind": "pass", "off_team": "GB", "def_team": "NYJ", "off_rank": 2, "def_rank": 32
+    },
+    "highest_market_total": { "game_id": "2026_02_DET_BUF", "away": "DET", "home": "BUF", "value": 54.5 },
+    "lowest_market_total": { "game_id": "2026_02_PHI_TEN", "away": "PHI", "home": "TEN", "value": 39.5 }
+  }
 }
 ```
 

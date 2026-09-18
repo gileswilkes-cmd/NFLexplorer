@@ -2,15 +2,15 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import type { FullUnitKey, GameMatchups, UnitMatchup } from "@/lib/matchups";
-import { sosSentence } from "@/lib/matchups";
+import type { FullUnitKey, GameWithDivergence, UnitMatchup } from "@/lib/matchups";
+import { computeDivergenceHeadline, sosSentence } from "@/lib/matchups";
 import { formatFinalLine, formatMarketLine, oddsForGame, type OddsDoc } from "@/lib/odds";
 import {
   computeSpotlightSlots, computeWatchSlots, formatWatchSlotText, shortName,
   type SpotlightSlot, type SpotlightUnit, type TeamPlayersDoc,
 } from "@/lib/spotlights";
 import type { TeamIndexEntry } from "@/lib/types";
-import { InjuryBadge, RankPill, gameTagStyle, ordinal } from "./common";
+import { InjuryBadge, NoLineBadge, RankPill, divergenceTierBadge, gameTagStyle, ordinal } from "./common";
 
 type TeamMeta = Record<string, TeamIndexEntry>;
 
@@ -59,8 +59,6 @@ function PlayerLink({ slot }: { slot: SpotlightSlot }) {
       ) : (
         <span className="tabular text-ink-muted">
           {player.headline} · {player.percentile != null ? `${Math.round(player.percentile)}th pctl` : "n/a"}
-          {" · faces "}
-          {slot.oppTeam}&apos;s {ordinal(slot.oppRank)}-ranked {slot.oppUnitLabel}
         </span>
       )}
     </li>
@@ -73,8 +71,10 @@ const UNIT_LABELS: Record<SpotlightUnit, string> = {
 };
 
 /** The full per-unit player breakdown for one team — expanded-detail only
- *  (docs/MATCHUPS_SPOTLIGHTS.md). Framed at unit level throughout: every
- *  "faces" pairing names the opposing UNIT's rank, never a 1-on-1. */
+ *  (docs/MATCHUPS_SPOTLIGHTS.md). The opposing-unit pairing ("vs 30th-ranked
+ *  pass D") is a fact about the UNIT, shared by every player in the group —
+ *  it lives once on the group header, not repeated on each player row.
+ *  Framed at unit level throughout: never an implied 1-on-1. */
 function TeamSpotlights({ team, slots }: { team: string; slots: SpotlightSlot[] }) {
   const forTeam = slots.filter((s) => s.team === team);
   if (forTeam.length === 0) return null;
@@ -88,7 +88,10 @@ function TeamSpotlights({ team, slots }: { team: string; slots: SpotlightSlot[] 
         byUnit[unit].length === 0 ? null : (
           <div key={unit}>
             <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
-              {UNIT_LABELS[unit]}
+              {UNIT_LABELS[unit]}{" "}
+              <span className="normal-case font-normal tracking-normal text-ink-muted">
+                vs {byUnit[unit][0].oppTeam}&apos;s {ordinal(byUnit[unit][0].oppRank)}-ranked {byUnit[unit][0].oppUnitLabel}
+              </span>
             </p>
             <ul className="flex flex-col gap-1">
               {byUnit[unit].map((s) => (
@@ -122,15 +125,24 @@ function MatchupCell({ m }: { m: UnitMatchup }) {
 const fmtEpa = (v: number) => (v > 0 ? "+" : "") + v.toFixed(3);
 
 export default function GameCard({ gm, meta, oddsDoc, teamPlayersDoc, week }: {
-  gm: GameMatchups; meta: TeamMeta; oddsDoc: OddsDoc | null; teamPlayersDoc: TeamPlayersDoc | null; week: string;
+  gm: GameWithDivergence; meta: TeamMeta; oddsDoc: OddsDoc | null; teamPlayersDoc: TeamPlayersDoc | null; week: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { game, matchups, tags, interest } = gm;
+  const { game, matchups, tags, divergence } = gm;
+  const tier = divergence.tier;
+  const noLine = divergence.marketSpreadHome === null;
+  // Tail cards start collapsed (compact — no grid, no verdict/market block)
+  // so the tier's own reduced visual weight is real, not just a badge; the
+  // same click-to-expand affordance that already reveals EPA/SOS detail also
+  // reveals this block, so nothing is permanently hidden.
+  const isCompact = tier === "tail" && !expanded;
   const odds = oddsForGame(oddsDoc, week, game.game_id);
   const isFinal = game.away_score !== null && game.home_score !== null;
   const marketLine = isFinal
     ? formatFinalLine(game.away, game.home, game.away_score!, game.home_score!)
     : formatMarketLine(odds);
+  const divergenceHeadline = computeDivergenceHeadline(gm);
+  const tierBadge = divergenceTierBadge(tier);
 
   const spotlightSlots = computeSpotlightSlots(gm, teamPlayersDoc);
   const watchSlots = computeWatchSlots(spotlightSlots);
@@ -159,21 +171,27 @@ export default function GameCard({ gm, meta, oddsDoc, teamPlayersDoc, week }: {
       tabIndex={0}
       onClick={() => setExpanded((v) => !v)}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setExpanded((v) => !v); }}
-      className="cursor-pointer rounded-xl border border-hairline bg-surface p-4 transition hover:border-ink-muted"
+      className={`cursor-pointer rounded-xl border bg-surface transition hover:border-ink-muted ${
+        tier === "hero" ? "border-ink-secondary p-5" : isCompact ? "border-hairline p-3" : "border-hairline p-4"
+      }`}
     >
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <TeamPill code={game.away} meta={meta} />
           <span className="text-ink-muted">@</span>
           <TeamPill code={game.home} meta={meta} />
         </div>
         <div className="flex items-center gap-2">
-          <span className="tabular text-xs text-ink-muted" title="interest score">
-            {interest.toFixed(1)}
-          </span>
+          {noLine && <NoLineBadge />}
           <span className="text-xs text-ink-muted">{game.date}</span>
         </div>
       </div>
+
+      {tierBadge && (
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+          {tierBadge}
+        </p>
+      )}
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         {tags.map((tag) => (
@@ -187,56 +205,66 @@ export default function GameCard({ gm, meta, oddsDoc, teamPlayersDoc, week }: {
         ))}
       </div>
 
-      <div className="mb-3 flex flex-col gap-1.5 rounded-lg border border-hairline bg-background px-3 py-2.5">
-        <p className="text-[15px] leading-snug text-ink-secondary sm:text-[16px]">
-          <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
-            Model
-          </span>
-          {gm.verdict}
-        </p>
-        <p className="tabular text-sm text-ink-secondary">
-          <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
-            Market
-          </span>
-          {marketLine}
-        </p>
-        {watchSlots.length > 0 && (
-          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-ink-secondary">
+      <p
+        className={`mb-3 leading-snug text-ink-primary ${tier === "hero" ? "text-[17px] sm:text-[18px] font-medium" : "text-[15px] sm:text-[16px]"}`}
+      >
+        {isFinal ? marketLine : divergenceHeadline}
+      </p>
+
+      {!isCompact && (
+        <div className="mb-3 flex flex-col gap-1.5 rounded-lg border border-hairline bg-background px-3 py-2.5">
+          <p className="text-[15px] leading-snug text-ink-secondary sm:text-[16px]">
             <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
-              Watch
+              Model
             </span>
-            {watchSlots.map((s, i) => (
-              <span key={s.player.gsis_id} className="inline-flex items-center gap-1">
-                {i > 0 && <span className="text-ink-muted">·</span>}
-                <span>{formatWatchSlotText(s)}</span>
-                {s.player.injury_status && <InjuryBadge status={s.player.injury_status} />}
-              </span>
-            ))}
+            {gm.verdict}
           </p>
-        )}
-      </div>
+          <p className="tabular text-sm text-ink-secondary">
+            <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+              Market
+            </span>
+            {marketLine}
+          </p>
+          {watchSlots.length > 0 && (
+            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-ink-secondary">
+              <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+                Watch
+              </span>
+              {watchSlots.map((s, i) => (
+                <span key={s.player.gsis_id} className="inline-flex items-center gap-1">
+                  {i > 0 && <span className="text-ink-muted">·</span>}
+                  <span>{formatWatchSlotText(s)}</span>
+                  {s.player.injury_status && <InjuryBadge status={s.player.injury_status} />}
+                </span>
+              ))}
+            </p>
+          )}
+        </div>
+      )}
 
-      <div className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2.5 gap-y-2.5">
-        <div />
-        <div className="text-center text-xs font-semibold uppercase tracking-wide text-ink-muted">
-          Pass
-        </div>
-        <div className="text-center text-xs font-semibold uppercase tracking-wide text-ink-muted">
-          Run
-        </div>
+      {!isCompact && (
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2.5 gap-y-2.5">
+          <div />
+          <div className="text-center text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Pass
+          </div>
+          <div className="text-center text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Run
+          </div>
 
-        <div className="pr-1 text-sm font-medium whitespace-nowrap text-ink-secondary">
-          {game.away} <span className="font-normal text-ink-muted">att</span>
-        </div>
-        <MatchupCell m={awayPass} />
-        <MatchupCell m={awayRun} />
+          <div className="pr-1 text-sm font-medium whitespace-nowrap text-ink-secondary">
+            {game.away} <span className="font-normal text-ink-muted">att</span>
+          </div>
+          <MatchupCell m={awayPass} />
+          <MatchupCell m={awayRun} />
 
-        <div className="pr-1 text-sm font-medium whitespace-nowrap text-ink-secondary">
-          {game.home} <span className="font-normal text-ink-muted">att</span>
+          <div className="pr-1 text-sm font-medium whitespace-nowrap text-ink-secondary">
+            {game.home} <span className="font-normal text-ink-muted">att</span>
+          </div>
+          <MatchupCell m={homePass} />
+          <MatchupCell m={homeRun} />
         </div>
-        <MatchupCell m={homePass} />
-        <MatchupCell m={homeRun} />
-      </div>
+      )}
 
       {expanded && !isFinal && odds && (
         <p className="mt-3 border-t border-hairline pt-3 tabular text-xs text-ink-muted">
