@@ -411,21 +411,45 @@ that team's games played in the entry's season (16 for a pre-2021 season, 17
 from 2021, fewer for 2026 season-to-date) — added retroactively to all
 existing TEAM entries (2015–2025 + records.json), additive, no bump.
 
-### `leaderboards/season/2026.json` — season-to-date, TEAM only
+Every QB/RB/WR/TE player entry (season/records/career scope) additionally
+carries `"games": N` and `"volume": N` — `volume` is that position's
+`QUALIFIERS`/`CAREER_QUALIFIERS` denominator (QB pass attempts, RB carries,
+WR/TE targets), attached to **every** stat entry for that player regardless
+of which board it's on, so a wide table doesn't need a second lookup to know
+whether a row has enough volume to qualify. Also added retroactively to all
+existing player entries (2015–2025 + records.json + career.json), additive,
+no bump; K/DL/LB/DB entries don't have it yet (a later pass). `career.json`'s
+`games`/`volume` are career totals, not a single-season count.
 
-Built by a separate path (`ingest/build.py --leaderboards-2026`, not the
+### `leaderboards/season/2026.json` — season-to-date, TEAM + QB/RB/WR/TE
+
+Built by two separate paths (`ingest/build.py --leaderboards-2026`, not the
 `--leaderboards` stage above) because **2026 is deliberately outside
 `ALL_SEASONS`/`LEADERBOARD_WINDOW` (2015–2025)** — it's an in-progress
-season, not eligible for `records.json`/`career.json` pooling, and
-`teams/{franchise}.json` has no 2026 entry (team pages are out of scope for
-this build; adding a 2026 team-page entry was a separate, un-taken decision).
-Computes directly from `_team_season_metrics(2026)` — the exact same
-function and metric definitions Phase 3a uses for 2015–2025 — rather than
-reading a persisted team file. `boards` has only `"TEAM"`; there is no
-player-position data for 2026 in this file. Re-run to refresh as the season
-progresses; each run recomputes from fresh PBP (no freeze/merge — this
-mirrors the matchups product's `captured`-until-kickoff pattern only in
-spirit, not in mechanism, since a leaderboard has no "kickoff" to freeze at).
+season, not eligible for `records.json`/`career.json` pooling, and neither
+`teams/{franchise}.json` nor `players/{gsis_id}.json` has a 2026 entry (team
+and player pages are out of scope for this build; a 2026 profile-page entry
+for either was a separate, un-taken decision).
+
+- **TEAM**: `_team_season_metrics(2026)` — the exact same function and metric
+  definitions Phase 3a uses for 2015–2025 — rather than reading a persisted
+  team file.
+- **QB/RB/WR/TE** (`build_player_leaderboards_2026()`): `process_season(2026)`
+  + `_season_row()` — the exact per-player aggregation Phase 1 uses for
+  2015–2025 — then the same `LEADERBOARD_STATS`/`_player_board_meta`/
+  `_board_value` as the `--leaderboards` stage, with one deliberate
+  difference: **no qualifier is applied at build time.** A flat full-season
+  volume floor (e.g. QB `pass_att >= 224`) is meaningless at week 2–3, so
+  every entry carries `games`/`volume` unfiltered (see above) and
+  `"qualifier": null` on every board — the UI computes and applies a
+  games-scaled threshold itself, with a show-all toggle. Also uncapped (no
+  `LEADERBOARD_CAP` 100-entry truncation — a wide table needs the full pool,
+  not a pre-truncated top 100). Defensive groups (DL/LB/DB) and K are a
+  later pass; not present in this file yet. Re-run either path to refresh as
+  the season progresses; each run recomputes from fresh PBP (no freeze/merge
+  — this mirrors the matchups product's `captured`-until-kickoff pattern
+  only in spirit, not in mechanism, since a leaderboard has no "kickoff" to
+  freeze at).
 
 ```jsonc
 // leaderboards/season/2026.json
@@ -442,7 +466,20 @@ spirit, not in mechanism, since a leaderboard has no "kickoff" to freeze at).
         ]
       }
       // … all 20 TEAM_RANKABLE_OFF/DEF categories, same set as every other season
+    },
+    "QB": {
+      "pass_yds": {
+        "label": "Passing yards", "direction": "desc", "qualifier": null,
+        "entries": [
+          { "id": "00-0040743", "name": "Tyler Shough", "team": "NO", "season": 2026,
+            "value": 662, "games": 2, "volume": 90, "rank": 1 }
+          // … every QB with a 2026 REG row, unqualified and uncapped
+        ]
+      }
+      // … the full LEADERBOARD_STATS["QB"] set (pass_td, int_rate, sack_rate, rush_yds,
+      // rush_td, cmp_pct, ypa, epa_per_play, cpoe)
     }
+    // … "RB", "WR", "TE" the same shape, each with its own LEADERBOARD_STATS set
   }
 }
 ```

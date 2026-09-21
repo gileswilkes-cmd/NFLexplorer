@@ -167,9 +167,17 @@ export interface BoardEntry {
   /** rate boards only: the raw count and its denominator behind `value` */
   count?: number;
   denom?: number;
-  /** TEAM boards only: that team's games played in this entry's season —
-   *  16/17 for a completed season, smaller for 2026 season-to-date */
+  /** TEAM and QB/RB/WR/TE player boards: games played in this entry's
+   *  season — 16/17 for a completed season, smaller for 2026 season-to-date.
+   *  Absent on K/DL/LB/DB boards (not yet backfilled — a later pass). */
   games?: number;
+  /** QB/RB/WR/TE player boards only: that position's volume-qualifier
+   *  denominator (QB pass attempts, RB carries, WR/TE targets) — the raw
+   *  count behind whatever games-scaled qualifier the UI applies. Present
+   *  on EVERY stat entry for a player, not just the board whose stat this
+   *  key happens to be (so a player's own attempts/carries/targets don't
+   *  depend on which single-stat board they're looked up from). */
+  volume?: number;
 }
 
 export interface Board {

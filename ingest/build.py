@@ -1505,7 +1505,8 @@ def build_leaderboards() -> None:
                     continue
                 season_cand[row["season"]][grp][stat].append(
                     {"id": pid, "name": name, "team": row["team"], "season": row["season"],
-                     "value": v, **_board_extras(flat, stat, kind)})
+                     "value": v, "games": row["games"], "volume": int(flat.get(qkey, 0)),
+                     **_board_extras(flat, stat, kind)})
 
         career = doc.get("career")
         pos_latest = doc["profile"]["pos"]
@@ -1523,6 +1524,7 @@ def build_leaderboards() -> None:
                     continue
                 career_cand[grp_latest][stat].append(
                     {"id": pid, "name": name, "team": team, "value": v,
+                     "games": career["games"], "volume": int(flat.get(qkey, 0)),
                      **_board_extras(flat, stat, kind)})
 
     def write_boards(candidates_by_grp: dict[str, dict[str, list]], scope: str, path: Path, extra: dict) -> dict:
@@ -1683,6 +1685,93 @@ def build_team_leaderboards_2026() -> None:
     n = sum(len(v["entries"]) for v in doc["boards"]["TEAM"].values())
     print(f"  wrote leaderboards/season/2026.json ({n} entries, {len(doc['boards']['TEAM'])} categories, "
           f"{len(games_by_team)} teams, games/team range {games_vals[0]}-{games_vals[-1]})")
+
+
+def build_player_leaderboards_2026() -> None:
+    """Season-to-date QB/RB/WR/TE boards for the current (in-progress) season
+    — the skill-position analog of build_team_leaderboards_2026(), same
+    reasoning: kept OUT of ALL_SEASONS/records.json/career.json (2026 is a
+    partial season, not eligible for "best seasons ever" or career pooling),
+    computed directly rather than reading players/{id}.json (which has no
+    2026 entry — player pages stay out of scope for this leaderboards change).
+
+    Computes from process_season(2026) + _season_row() — the EXACT per-player
+    aggregation Phase 1 uses for 2015-2025 (same stats, same advanced metrics,
+    same everything) — then reuses LEADERBOARD_STATS / _player_board_meta /
+    _board_value / _rank_entries unchanged. The one deliberate difference:
+    NO qualifier is applied here (every rate/derived board stat is emitted
+    for every player who has one, unlike the 2015-2025 boards, which drop
+    sub-threshold entries at build time via _needs_qualifier). A flat
+    full-season qualifier is meaningless at week 2-3, and "scales with games
+    played" is a display-time question — every entry instead carries `games`
+    and `volume` (that position's QUALIFIERS[grp][0] raw count: pass_att,
+    rush_att, or targets) so the wide table can compute and apply a
+    games-scaled threshold itself, with a show-all toggle. Uncapped (no
+    LEADERBOARD_CAP=100 truncation) — the wide table is built to filter
+    500+ rows, not to see a pre-truncated top-100.
+
+    Defensive groups (DL/LB/DB) and K are a later pass; not built here.
+    """
+    print("Building 2026 player leaderboards (season-to-date, QB/RB/WR/TE)…")
+    acc = process_season(2026)
+
+    players = fetch_players().set_index("gsis_id")
+    PLAYER_GROUPS = ("QB", "RB", "WR", "TE")
+    season_cand: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    row_counts: dict[str, int] = defaultdict(int)
+    no_name = 0
+
+    for pid, roster_row in acc.roster.items():
+        grp = position_group(roster_row.get("pos") or "")
+        if grp not in PLAYER_GROUPS:
+            continue
+        row = _season_row(acc, pid, "REG")
+        if row is None:
+            continue
+        try:
+            ident = players.loc[pid]
+            name = ident.iloc[0].display_name if isinstance(ident, pd.DataFrame) else ident.display_name
+        except KeyError:
+            no_name += 1
+            continue  # not in players master — skip rather than show a blank name
+
+        row_counts[grp] += 1
+        flat = _flat_for_board(row)
+        qkey, _qmin = QUALIFIERS[grp]
+        volume = int(flat.get(qkey, 0))
+        for stat, kind in LEADERBOARD_STATS[grp]:
+            v = _board_value(flat, stat, kind)
+            if v is None:
+                continue
+            season_cand[grp][stat].append({
+                "id": pid, "name": name, "team": row["team"], "season": 2026,
+                "value": v, "games": row["games"], "volume": volume,
+                **_board_extras(flat, stat, kind),
+            })
+
+    path = DATA_DIR / "leaderboards" / "season" / "2026.json"
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
+        {"schema_version": SCHEMA_VERSION, "season": 2026, "boards": {}}
+
+    n_entries = 0
+    for grp in PLAYER_GROUPS:
+        grp_boards = {}
+        for stat, kind in LEADERBOARD_STATS[grp]:
+            entries = season_cand.get(grp, {}).get(stat, [])
+            if not entries:
+                continue
+            meta = _player_board_meta(grp, stat, kind, "season")
+            meta["qualifier"] = None  # 2026 boards are unqualified at build time — see docstring
+            meta["entries"] = _rank_entries(entries, _is_negative_board(stat, kind), cap=len(entries))
+            grp_boards[stat] = meta
+            n_entries += len(entries)
+        if grp_boards:
+            doc["boards"][grp] = grp_boards
+
+    write_json(path, doc)
+    counts = ", ".join(f"{g}={row_counts.get(g, 0)}" for g in PLAYER_GROUPS)
+    print(f"  wrote leaderboards/season/2026.json ({n_entries} entries across QB/RB/WR/TE boards, "
+          f"rows by position: {counts}, {no_name} players skipped — not in players master)")
 
 
 # --- Phase 4 Part 2: league-evolution trends ---------------------------------
@@ -1961,8 +2050,11 @@ def main() -> None:
     parser.add_argument("--leaderboards", action="store_true",
                         help="run ONLY the leaderboard stage (reads existing players/teams/seasons JSON, no ingest)")
     parser.add_argument("--leaderboards-2026", action="store_true",
-                        help="run ONLY the 2026 season-to-date TEAM leaderboard (fresh PBP pull, "
-                             "writes leaderboards/season/2026.json TEAM board only)")
+                        help="run the 2026 season-to-date leaderboards (TEAM + QB/RB/WR/TE; fresh PBP "
+                             "pull, writes leaderboards/season/2026.json)")
+    parser.add_argument("--leaderboards-2026-players", action="store_true",
+                        help="run ONLY the 2026 season-to-date QB/RB/WR/TE leaderboards (fresh PBP "
+                             "pull, writes leaderboards/season/2026.json player boards only)")
     parser.add_argument("--trends", action="store_true",
                         help="run ONLY the league-trends stage (reads cached PBP, no player/team rebuild)")
     args = parser.parse_args()
@@ -1977,6 +2069,11 @@ def main() -> None:
 
     if args.leaderboards_2026:
         build_team_leaderboards_2026()
+        build_player_leaderboards_2026()
+        return
+
+    if args.leaderboards_2026_players:
+        build_player_leaderboards_2026()
         return
 
     if args.leaderboards:
