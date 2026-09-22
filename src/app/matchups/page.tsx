@@ -7,7 +7,7 @@ import {
   type GameWithDivergence, type ScheduleDoc, type SlateStrip, type UnitRatingsDoc,
 } from "@/lib/matchups";
 import type { OddsDoc } from "@/lib/odds";
-import type { TeamPlayersDoc } from "@/lib/spotlights";
+import { formatGeneratedAt, type TeamPlayersDoc } from "@/lib/spotlights";
 import type { TeamIndex, TeamIndexEntry } from "@/lib/types";
 import GameCard from "@/components/matchups/GameCard";
 
@@ -221,6 +221,15 @@ function MatchupsInner() {
 
       <HonestyCaption />
       <RankLegend />
+      {/* Baked pull time, not render time (docs/MATCHUPS_INJURIES.md) — a
+          stale team_players.json must visibly say its own age rather than
+          silently looking current. Supplementary like the rest of the
+          spotlights layer: absent (not an error) when the file failed to load. */}
+      {teamPlayersDoc && (
+        <p className="text-xs text-ink-muted">
+          Injury data as of {formatGeneratedAt(teamPlayersDoc.generated_at)}
+        </p>
+      )}
 
       {error && <p className="text-ink-muted">Couldn&apos;t load matchup data.</p>}
       {loading && !error && <p className="text-ink-muted">Loading…</p>}

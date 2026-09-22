@@ -68,17 +68,43 @@ OUT_STATUSES = {"Out", "IR"}
 # active gameday roster at all", so it's treated the same as an Out report.
 RESERVE_ROSTER_STATUSES = {"RES"}
 
+# import_seasonal_rosters' `status` also carries "INA" (game-day inactive) —
+# but only once a game has actually been played (it's a post-hoc result, not
+# a pre-kickoff signal), so it can't inform a spotlight shown before kickoff.
+# Deliberately unused here; parked as a future look-back/ex-post input.
 
-def load_roster() -> "tuple[list[dict], dict[str, str]]":
+
+def load_roster(week: int) -> "tuple[list[dict], dict[str, str]]":
     """import_seasonal_rosters([2026]): active roster rows for team
     membership (one row per player.id; the raw table can carry incidental
     duplicate rows for the same id/team), plus a gsis_id -> roster `status`
-    map (ACT/RES/CUT/...) for every rostered player, used as the IR/reserve
-    signal for starter resolution."""
+    map (ACT/RES/CUT/...), used as the IR/reserve signal for starter
+    resolution and injury flagging.
+
+    status_by_id: re-checked against the live table at fix time (not just
+    assumed from the `week` column's existence) — as pulled, this table
+    currently carries exactly ONE row per player, not a true row-per-week
+    history; `week` just records when that row was last stamped (2524
+    players stamped week 2, 455 still stamped week 1 with no newer row to
+    prefer). A strict `week == current` filter would therefore have SILENTLY
+    DROPPED those 455 players' status entirely — worse than the original
+    "unfiltered" code, not a fix. Verified byte-identical to the original
+    dict(zip(df["player_id"], df["status"])) against today's data (0 of 2979
+    entries differ). What's implemented instead — each player's latest row
+    at or before `week` — is a no-op today but guards the real risk the
+    original review flagged (a future pull where nflverse DOES emit more
+    than one row per player across weeks; dict(zip(...)) over an unsorted
+    table would then silently keep whichever row happened to sort last,
+    not necessarily the most recent one).
+
+    Team membership (`rows`) stays a multi-week union of ACT rows, unchanged
+    — that wasn't the reported bug, and team rosters don't churn week to
+    week the way a status column does."""
     df = nfl.import_seasonal_rosters([ROSTER_SEASON])
     if df.empty:
         raise SystemExit(f"import_seasonal_rosters([{ROSTER_SEASON}]) returned no rows")
-    status_by_id = dict(zip(df["player_id"], df["status"]))
+    cur = df[df["week"] <= week].sort_values("week")
+    status_by_id = dict(zip(cur["player_id"], cur["status"]))
     act = df[(df["status"] == "ACT") & df["player_id"].notna()]
     act = act.drop_duplicates("player_id")
     rows = act[["team", "player_id", "player_name", "position"]].to_dict("records")
@@ -182,16 +208,35 @@ def make_entry(pid: str, name: str, pos: str, season: dict, headline: str, perce
     }
 
 
-def attach_injury(entry: dict, gsis_id: str, injuries: "dict[str, str]") -> dict:
-    """Current-week Out/Doubtful/Questionable flag — informational only here;
-    it does NOT by itself change who's shown as the starter (see
-    resolve_starter for the QB/RB override)."""
-    entry["injury_status"] = injuries.get(gsis_id)
+def resolve_injury_status(gsis_id: str, injuries: "dict[str, str]", roster_status: "dict[str, str]") -> str | None:
+    """The single status-flag rule, shared by attach_injury and
+    attach_starter_meta's skipped-starter list — same two signals is_out()
+    already uses for starter resolution, now also driving the informational
+    flag: an explicit weekly report_status (Out/Doubtful/Questionable) wins
+    when present; otherwise a RES roster status (long-term reserve/IR, which
+    generally stops appearing on the weekly report at all once established)
+    surfaces as "IR". Previously attach_injury read report_status only, so a
+    production-selected spotlight on IR (e.g. Myles Garrett, roster status
+    RES, not on the week-2 report) rendered injury_status: null."""
+    report = injuries.get(gsis_id)
+    if report:
+        return report
+    if roster_status.get(gsis_id) in RESERVE_ROSTER_STATUSES:
+        return "IR"
+    return None
+
+
+def attach_injury(entry: dict, gsis_id: str, injuries: "dict[str, str]", roster_status: "dict[str, str]") -> dict:
+    """Current-week status flag — informational only here; it does NOT by
+    itself change who's shown as the starter (see resolve_starter for the
+    QB/RB override, which already reads both signals via is_out())."""
+    entry["injury_status"] = resolve_injury_status(gsis_id, injuries, roster_status)
     return entry
 
 
 def attach_starter_meta(
-    entry: dict, depth_rank: int, skipped: "list[tuple[str, str]]", injuries: "dict[str, str]"
+    entry: dict, depth_rank: int, skipped: "list[tuple[str, str]]",
+    injuries: "dict[str, str]", roster_status: "dict[str, str]"
 ) -> dict:
     """QB/RB entries only: where this player sits on the current depth chart,
     and — when an injury bumped him into the job — every depth-chart entry
@@ -202,7 +247,8 @@ def attach_starter_meta(
     entry["depth_rank"] = depth_rank
     entry["starter_override"] = bool(skipped)
     entry["overridden_starters"] = [
-        {"gsis_id": gid, "name": name, "injury_status": injuries.get(gid)} for gid, name in skipped
+        {"gsis_id": gid, "name": name, "injury_status": resolve_injury_status(gid, injuries, roster_status)}
+        for gid, name in skipped
     ]
     return entry
 
@@ -328,8 +374,8 @@ def build_team_players(
                 make_entry(pid, name, "QB", season, *qb_headline(season)) if season
                 else no_data_entry(pid, name, "QB")
             )
-            attach_injury(qb_entry, pid, injuries)
-            attach_starter_meta(qb_entry, depth_rank, skipped, injuries)
+            attach_injury(qb_entry, pid, injuries, roster_status)
+            attach_starter_meta(qb_entry, depth_rank, skipped, injuries, roster_status)
 
         receivers = []
         wr_te_cands = pick_top(
@@ -340,7 +386,7 @@ def build_team_players(
                 make_entry(row["player_id"], row["player_name"], row["position"], season, *receiver_headline(season))
                 if season else no_data_entry(row["player_id"], row["player_name"], row["position"])
             )
-            attach_injury(entry, row["player_id"], injuries)
+            attach_injury(entry, row["player_id"], injuries, roster_status)
             receivers.append(entry)
 
         # --- run offence: lead RB (depth chart + injury override) ------------
@@ -355,8 +401,8 @@ def build_team_players(
                 make_entry(pid, name, "RB", season, *rb_headline(season)) if season
                 else no_data_entry(pid, name, "RB")
             )
-            attach_injury(rb_entry, pid, injuries)
-            attach_starter_meta(rb_entry, depth_rank, skipped, injuries)
+            attach_injury(rb_entry, pid, injuries, roster_status)
+            attach_starter_meta(rb_entry, depth_rank, skipped, injuries, roster_status)
 
         # --- pass defence: top pass-rusher, optional top DB ------------------
         # Not optional per spec ("top pass-rusher", unlike the DB/tackler
@@ -371,7 +417,7 @@ def build_team_players(
                 make_entry(row["player_id"], row["player_name"], row["position"], season, *rusher_headline(season))
                 if season else no_data_entry(row["player_id"], row["player_name"], row["position"])
             )
-            attach_injury(rusher_entry, row["player_id"], injuries)
+            attach_injury(rusher_entry, row["player_id"], injuries, roster_status)
 
         db_entry = None
         db_cands = pick_top(by_group.get("DB", []), cache, "def_int")
@@ -381,7 +427,7 @@ def build_team_players(
                 st = season.get("stats", {})
                 if (st.get("def_int", 0) >= DB_MIN_PRODUCTION) or (st.get("pass_defended", 0) >= PD_MIN_PRODUCTION):
                     db_entry = make_entry(row["player_id"], row["player_name"], row["position"], season, *db_headline(season))
-                    attach_injury(db_entry, row["player_id"], injuries)
+                    attach_injury(db_entry, row["player_id"], injuries, roster_status)
             # no `season` (no 2025 data) or below the production bar -> omit
             # entirely; per spec this slot is optional and thin data should
             # not be forced into a spotlight.
@@ -393,7 +439,7 @@ def build_team_players(
             row, doc, season = tackler_cands[0]
             if season and season.get("stats", {}).get("tackles", 0) >= TACKLER_MIN_TACKLES:
                 tackler_entry = make_entry(row["player_id"], row["player_name"], row["position"], season, *tackler_headline(season))
-                attach_injury(tackler_entry, row["player_id"], injuries)
+                attach_injury(tackler_entry, row["player_id"], injuries, roster_status)
 
         teams[team] = {
             "pass_off": {"qb": qb_entry, "receivers": receivers},
@@ -412,10 +458,14 @@ def build_team_players(
 
 
 def main() -> None:
+    wk = current_week()
+    print(f"Current week resolves to {wk}")
+
     print(f"Checking import_seasonal_rosters([{ROSTER_SEASON}])...")
-    roster, roster_status = load_roster()
+    roster, roster_status = load_roster(wk)
     n_teams = len({row["team"] for row in roster})
-    print(f"  {len(roster)} active rows, {n_teams} teams")
+    print(f"  {len(roster)} active rows, {n_teams} teams, "
+          f"{len(roster_status)} players with a week-{wk} roster status")
     if n_teams < 32:
         raise SystemExit(
             f"import_seasonal_rosters([{ROSTER_SEASON}]) does not look like a real full-league "
@@ -433,8 +483,7 @@ def main() -> None:
             f"({len(dc_teams)} teams, {len(dc_qb_teams)} with QB) — stopping before building spotlights"
         )
 
-    wk = current_week()
-    print(f"Checking import_injuries([{ROSTER_SEASON}])... (current week resolves to {wk})")
+    print(f"Checking import_injuries([{ROSTER_SEASON}])...")
     injuries = load_injuries_current(wk)
     print(f"  {len(injuries)} players on week {wk}'s injury report with a status")
 

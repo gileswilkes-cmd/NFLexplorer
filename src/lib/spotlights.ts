@@ -18,9 +18,15 @@ export interface TeamPlayerEntry {
   games_2025?: number;
   flag: "no_2025_data" | null;
   note?: string;
-  /** this week's injury report status, from import_injuries — null when the
-   *  player isn't on the report at all (docs/MATCHUPS_INJURIES.md) */
-  injury_status?: "Out" | "Doubtful" | "Questionable" | null;
+  /** this week's status — an explicit report from import_injuries
+   *  (Out/Doubtful/Questionable), or "IR" derived from roster status (RES)
+   *  when there's no weekly report entry; null when neither signal fires
+   *  (docs/MATCHUPS_INJURIES.md). IR realistically only ever appears here on
+   *  a QB/RB entry (production-selected WR/TE/defensive slots are drawn
+   *  from the active-roster pool, which excludes RES players outright —
+   *  they're replaced silently, not flagged) — see resolve_injury_status in
+   *  ingest/build_spotlights.py. */
+  injury_status?: "Out" | "Doubtful" | "Questionable" | "IR" | null;
   /** QB/RB entries only: current depth-chart rank of the resolved starter */
   depth_rank?: number;
   /** QB/RB entries only: true when one or more depth-chart entries ranked
@@ -30,8 +36,9 @@ export interface TeamPlayerEntry {
   /** QB/RB entries only: every depth-chart entry ranked above the resolved
    *  starter that was Out/IR this week, in depth-chart order (can be more
    *  than one — e.g. QB1 and QB2 both Out bumps QB3 in); empty when
-   *  starter_override is false */
-  overridden_starters?: { gsis_id: string; name: string; injury_status: string | null }[];
+   *  starter_override is false. This is the realistic place an "IR" status
+   *  shows up in the UI — e.g. "in for Penix (IR)". */
+  overridden_starters?: { gsis_id: string; name: string; injury_status: "Out" | "Doubtful" | "Questionable" | "IR" | null }[];
 }
 
 export interface TeamPlayersUnit {
@@ -45,8 +52,24 @@ export interface TeamPlayersDoc {
   schema_version: number;
   roster_season: number;
   production_season: number;
+  /** ISO-8601 UTC — the real ingest/build_spotlights.py run time (the
+   *  injury/depth-chart/roster pull), baked in at build time. The UI must
+   *  read this, never client render time, so a stale file visibly says its
+   *  own age instead of silently looking current. */
   generated_at: string;
   teams: Record<string, TeamPlayersUnit>;
+}
+
+/** "Sep 18, 8:44 PM UTC" from `TeamPlayersDoc.generated_at` — the baked
+ *  pull time, not now. Falls back to the raw string if it doesn't parse,
+ *  rather than hiding a malformed timestamp. */
+export function formatGeneratedAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-US", {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    timeZone: "UTC", timeZoneName: "short",
+  });
 }
 
 export type SpotlightUnit = "pass_off" | "run_off" | "pass_def" | "run_def";

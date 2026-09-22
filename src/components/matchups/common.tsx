@@ -64,18 +64,30 @@ export function RankPill({ rank, sos }: { rank: number; sos?: UnitSos }) {
   );
 }
 
-const INJURY_ABBR: Record<"Out" | "Doubtful" | "Questionable", string> = {
-  Out: "O", Doubtful: "D", Questionable: "Q",
+const INJURY_ABBR: Record<"Out" | "Doubtful" | "Questionable" | "IR", string> = {
+  Out: "O", Doubtful: "D", Questionable: "Q", IR: "IR",
 };
 
 /** Injury-status badge (docs/MATCHUPS_INJURIES.md) — a health flag, not a
  *  quality signal, so it deliberately reuses the "attention" red tint
  *  (pct-lo-*) already used for game-character tags (gameTagStyle), not the
  *  teal/coral quality-tier palette RankPill/percentiles use. Severity by
- *  saturation: Out darkest, Questionable lightest. */
-export function InjuryBadge({ status }: { status: "Out" | "Doubtful" | "Questionable" }) {
+ *  saturation: Out darkest, Questionable lightest.
+ *
+ *  IR is deliberately OUT of that red gradient: it's a settled, longer-term
+ *  status (roster reserve), not a week-to-week "will he play" uncertainty,
+ *  so it reads as flat, heavier grey instead — modest, not an alarm colour.
+ *  In practice this only ever renders on a QB/RB entry (the resolved
+ *  starter's own status in the rare case every depth-chart option is
+ *  Out/IR, or a skipped starter in the "in for X (IR)" chain) — production-
+ *  selected WR/TE/defensive spotlights are drawn from the active-roster
+ *  pool, which already excludes RES/IR players, so they're replaced
+ *  silently rather than ever carrying this badge. */
+export function InjuryBadge({ status }: { status: "Out" | "Doubtful" | "Questionable" | "IR" }) {
   const style =
-    status === "Out"
+    status === "IR"
+      ? { background: "var(--ink-muted)", color: "var(--surface)" }
+      : status === "Out"
       ? { background: "var(--pct-lo-3)", color: "var(--foreground)" }
       : status === "Doubtful"
       ? { background: "var(--pct-lo-2)", color: "var(--ink-secondary)" }
@@ -84,7 +96,7 @@ export function InjuryBadge({ status }: { status: "Out" | "Doubtful" | "Question
     <span
       className="tabular inline-flex h-[1.3em] min-w-[1.3em] items-center justify-center rounded px-1 text-[10px] font-semibold leading-none"
       style={style}
-      title={status}
+      title={status === "IR" ? "Injured reserve" : status}
     >
       {INJURY_ABBR[status]}
     </span>
