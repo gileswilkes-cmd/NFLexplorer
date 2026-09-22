@@ -4,22 +4,22 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  GROUP_LABELS, SCOPES, WINDOW_LABEL, entryHref, formatBoardValue, groupsIn,
-  needsWindowLabel, qualifierText, rateContext, scopePath, type Scope,
+  GROUP_LABELS, SCOPES, WINDOW_LABEL, WIDE_TABLE_GROUPS, entryHref, formatBoardValue,
+  groupsIn, needsWindowLabel, qualifierText, rateContext, scopePath, type Scope,
 } from "@/lib/leaderboards";
 import type { LeaderboardDoc } from "@/lib/types";
-import TeamsWideTable from "@/components/leaderboards/TeamsWideTable";
+import WideStatTable from "@/components/leaderboards/WideStatTable";
 
-// 2026 is season-to-date, TEAM only (docs/DATA_SCHEMA.md) — no player boards
-// exist for it yet, so it's still offered in the Season dropdown for every
-// position (groupsIn() naturally narrows the Position dropdown to just
-// "Teams" once a doc with only a TEAM board loads), but the DEFAULT season
-// only jumps to 2026 for the Teams view; every other position's default
-// stays 2025, unaffected.
+// 2026 is season-to-date, TEAM + QB/RB/WR/TE only (docs/DATA_SCHEMA.md) — no
+// DL/LB/DB/K boards exist for it yet, so it's still offered in the Season
+// dropdown for every position (groupsIn() naturally narrows the Position
+// dropdown to whatever the loaded doc actually has), but the DEFAULT season
+// only jumps to 2026 for the wide-table positions (WIDE_TABLE_GROUPS); every
+// other position's default stays 2025, unaffected.
 const SEASONS = Array.from({ length: 12 }, (_, i) => 2015 + i);
 const LATEST_PLAYER_SEASON = 2025;
-const LATEST_TEAM_SEASON = 2026;
-const defaultSeasonFor = (group: string) => (group === "TEAM" ? LATEST_TEAM_SEASON : LATEST_PLAYER_SEASON);
+const LATEST_WIDE_SEASON = 2026;
+const defaultSeasonFor = (group: string) => (WIDE_TABLE_GROUPS.has(group) ? LATEST_WIDE_SEASON : LATEST_PLAYER_SEASON);
 
 const isScope = (s: string | null): s is Scope =>
   s === "season" || s === "records" || s === "career";
@@ -88,10 +88,10 @@ function LeaderboardsInner() {
   const stat = stats.includes(wantStat) ? wantStat : stats[0] ?? "";
   const board = doc?.boards[group]?.[stat] ?? null;
 
-  // The wide table replaces the single-stat view for single-season Teams
-  // only — records/career Teams (multi-season pooling) keep the existing
-  // one-stat-at-a-time behaviour this pass (step 12).
-  const isTeamsWide = scope === "season" && group === "TEAM" && !!doc?.boards.TEAM;
+  // The wide table replaces the single-stat view for single-season Teams and
+  // QB/RB/WR/TE only — records/career (multi-season pooling) and every other
+  // position keep the existing one-stat-at-a-time behaviour this pass.
+  const isWideMode = scope === "season" && WIDE_TABLE_GROUPS.has(group) && !!doc?.boards[group];
 
   const qualifier = qualifierText(board?.qualifier ?? null);
   const showWindow = needsWindowLabel(scope);
@@ -120,7 +120,7 @@ function LeaderboardsInner() {
         </Select>
         {/* The wide table has one column per stat — a single-stat dropdown is
             redundant on top of that, so it's hidden rather than shown inert. */}
-        {!isTeamsWide && (
+        {!isWideMode && (
           <Select label="Stat" value={stat} onChange={(v) => setParams({ stat: v })}>
             {stats.map((s) => (
               <option key={s} value={s}>{doc?.boards[group]?.[s]?.label ?? s}</option>
@@ -141,9 +141,16 @@ function LeaderboardsInner() {
       {error && <p className="text-ink-muted">Couldn&apos;t load that leaderboard.</p>}
       {!doc && !error && <p className="text-ink-muted">Loading…</p>}
 
-      {isTeamsWide && doc && <TeamsWideTable teamBoards={doc.boards.TEAM} season={season} />}
+      {/* key forces a remount on position/season change — WideStatTable's sort,
+          shading, qualifier, team-filter, and search state are all plain
+          useState with a one-time initializer (default sort per position in
+          particular), so switching Position without remounting would keep
+          the PREVIOUS position's sort tag/filters instead of resetting. */}
+      {isWideMode && doc && (
+        <WideStatTable key={`${group}-${season}`} group={group} boards={doc.boards[group]} season={season} />
+      )}
 
-      {!isTeamsWide && board && (
+      {!isWideMode && board && (
         <section>
           <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <h2 className="text-lg font-semibold">
@@ -219,7 +226,7 @@ function LeaderboardsInner() {
         </section>
       )}
 
-      {!isTeamsWide && doc && !board && !error && (
+      {!isWideMode && doc && !board && !error && (
         <p className="text-ink-muted">No board for that combination.</p>
       )}
     </main>
