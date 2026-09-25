@@ -1,0 +1,127 @@
+name: Weekly data refresh
+
+# Runs `npm run refresh:week` twice a week and pushes regenerated
+# public/data/** straight to main (Vercel auto-deploys on push).
+#
+# --- BST/GMT handling (read before touching the cron lines) -----------------
+# GitHub Actions cron is UTC only — there is no Europe/London option. 08:00
+# Europe/London is 07:00 UTC in BST (late Mar - late Oct) and 08:00 UTC in
+# GMT (late Oct - late Mar), so a single cron entry would silently fire an
+# hour off for half the year. Fix used here: schedule BOTH possible UTC times
+# for each target weekday (4 cron entries total, 2 per day), and the first
+# job step checks the ACTUAL current time in Europe/London (via the runner's
+# IANA tzdata, which encodes the real UK DST transition rule) and skips every
+# step except itself unless the local hour is exactly 08. Exactly one of the
+# two triggers passes that check on any given day; the other no-ops in a few
+# seconds. This self-adjusts across every future clock change with no
+# maintenance — nothing to remember or update when the clocks move.
+on:
+  schedule:
+    # Tuesday 08:00 Europe/London
+    - cron: "0 7 * * 2"  # BST (UTC+1)
+    - cron: "0 8 * * 2"  # GMT (UTC+0)
+    # Friday 08:00 Europe/London
+    - cron: "0 7 * * 5"  # BST (UTC+1)
+    - cron: "0 8 * * 5"  # GMT (UTC+0)
+  workflow_dispatch: {} # manual test-run trigger, see repo docs for how to fire it
+
+# Never let two runs race each other's commit/push (a manual dispatch landing
+# mid-schedule-run, etc.) — queue instead of overlapping.
+concurrency:
+  group: refresh-week
+  cancel-in-progress: false
+
+# The default GITHUB_TOKEN is read-only unless a workflow asks for more —
+# this is the one write this workflow needs (pushing the data commit).
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only proceed at 08:00 Europe/London (see BST/GMT note above)
+        id: gate
+        run: |
+          hour="$(TZ=Europe/London date +%H)"
+          echo "Current Europe/London time: $(TZ=Europe/London date +%H:%M) (event: ${{ github.event_name }})"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$hour" = "08" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Not 08:00 Europe/London right now — this is the other UTC-offset trigger for today's DST state. Skipping cleanly."
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # actions/checkout leaves a detached HEAD by default. refresh_week.ts
+      # runs `git pull` as its own first step, which fails outright on a
+      # detached HEAD ("you are not currently on a branch") — so land on a
+      # real local branch before anything else runs.
+      - name: Ensure a real branch checkout (not detached HEAD)
+        if: steps.gate.outputs.should_run == 'true'
+        run: git checkout -B main origin/main
+
+      - name: Set up Node
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24" # matches this machine's local dev/build Node (no engines field in package.json to pin from — flagged in the design report)
+          cache: "npm"
+
+      - name: Set up Python
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # pinned — nfl_data_py's pandas<2/numpy<2 pins have no 3.12+ wheels (ingest/requirements.txt)
+
+      - name: Install Node dependencies
+        if: steps.gate.outputs.should_run == 'true'
+        run: npm ci
+
+      - name: Install Python dependencies
+        if: steps.gate.outputs.should_run == 'true'
+        run: pip install -r ingest/requirements.txt
+
+      # ingest/pull_odds.mjs (invoked by refresh:week) is hardcoded to load
+      # `node --env-file=.env.local` and reads THE_ODDS_API_KEY from
+      # process.env — the same env var name, just sourced from a GitHub
+      # secret instead of the gitignored local file. Written fresh into the
+      # ephemeral runner's workspace each run; never committed (.env* is
+      # already gitignored as belt-and-braces).
+      - name: Write .env.local from the odds API secret
+        if: steps.gate.outputs.should_run == 'true'
+        run: echo "THE_ODDS_API_KEY=${{ secrets.THE_ODDS_API_KEY }}" > .env.local
+
+      - name: Configure git identity for the automated commit
+        if: steps.gate.outputs.should_run == 'true'
+        run: |
+          git config user.name "nfl-explorer-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      # No `continue-on-error`, no `|| true` — if any step inside refresh:week
+      # throws (a bad API response, a missing file, an nflverse pull
+      # failure), this step fails, the job stops here, and NOTHING below it
+      # (commit/push) runs. A failed run shows red in the Actions tab; it
+      # never pushes a half-written dataset.
+      - name: Run weekly refresh
+        if: steps.gate.outputs.should_run == 'true'
+        run: npm run refresh:week
+
+      # Scoped to exactly the directory refresh:week writes to — never a
+      # blanket `git add -A`/`git add .`. See the design report for the full
+      # list of files this touches under public/data/.
+      - name: Commit and push public/data changes
+        if: steps.gate.outputs.should_run == 'true'
+        run: |
+          git add public/data
+          if git diff --cached --quiet; then
+            echo "No changes to public/data this run — nothing to commit."
+          else
+            git commit -m "Automated refresh [skip ci]"
+            git push
+          fi
