@@ -14,9 +14,17 @@
 //      current-week QB/RB starters (with injury override) and injury-status
 //      flags on every spotlight player. Player-agnostic; never touches the
 //      model forecast below.
-//   5. write/refresh public/data/predictions/week_{N}.json for the current
+//   5. re-run `ingest/build.py --leaderboards-2026` -> rebuild
+//      public/data/leaderboards/season/2026.json's TEAM + QB/RB/WR/TE boards
+//      season-to-date (docs/DATA_SCHEMA.md). Independent of steps 2-4 (pulls
+//      its own fresh PBP), grouped here as another weekly input. Reuses the
+//      exact same command and historical board functions a one-off manual
+//      rebuild already used — see build_team_leaderboards_2026() /
+//      build_player_leaderboards_2026() in ingest/build.py. Never touches
+//      career.json, records.json, or any 2015-2025 season file.
+//   6. write/refresh public/data/predictions/week_{N}.json for the current
 //      "upcoming" week (defaultWeek(), the same rule /matchups itself uses)
-//   6. print a summary of what changed and stop — nothing is committed here.
+//   7. print a summary of what changed and stop — nothing is committed here.
 //
 // The freeze rule (non-negotiable, see docs/MATCHUPS_REFRESH.md Part 2): a
 // game's forecast is only ever (re)computed while it hasn't kicked off yet
@@ -70,6 +78,7 @@ const ODDS_PATH = path.join(REPO_ROOT, "public/data/matchups/odds_2026.json");
 const RATINGS_PATH = path.join(REPO_ROOT, "public/data/matchups/unit_ratings.json");
 const PREDICTIONS_DIR = path.join(REPO_ROOT, "public/data/predictions");
 const PREDICTIONS_META_PATH = path.join(PREDICTIONS_DIR, "meta.json");
+const LEADERBOARDS_2026_PATH = path.join(REPO_ROOT, "public/data/leaderboards/season/2026.json");
 
 function run(cmd: string, args: string[], label: string): void {
   console.log(`\n> ${label}`);
@@ -144,6 +153,45 @@ function diffOdds(before: OddsDoc | null, after: OddsDoc): string[] {
     }
   }
   return lines;
+}
+
+// Minimal shape for leaderboards/season/2026.json — only what this diff
+// summary reads (games-played range per group), not the full Board/BoardEntry
+// contract from src/lib/types.ts (deliberately not imported here; this file
+// only ever reports on the leaderboards doc, never constructs one — that
+// stays entirely inside ingest/build.py, per the "no reimplementation" rule).
+interface LeaderboardsDocLite {
+  boards: Record<string, Record<string, { entries: { games?: number }[] }>>;
+}
+
+/** min/max `games` across every entry in every board of one group (TEAM,
+ *  QB, RB, WR, TE) — a cheap proxy for "did the season actually advance",
+ *  cheaper than diffing every stat value. null when the group has no board
+ *  at all (e.g. before the very first --leaderboards-2026 run ever wrote
+ *  the file). */
+function gamesRange(doc: LeaderboardsDocLite | null, group: string): [number, number] | null {
+  const boards = doc?.boards[group];
+  if (!boards) return null;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const board of Object.values(boards)) {
+    for (const e of board.entries) {
+      if (e.games === undefined) continue;
+      if (e.games < min) min = e.games;
+      if (e.games > max) max = e.games;
+    }
+  }
+  return min === Infinity ? null : [min, max];
+}
+
+function diffLeaderboards(before: LeaderboardsDocLite | null, after: LeaderboardsDocLite): string[] {
+  return ["TEAM", "QB", "RB", "WR", "TE"].map((grp) => {
+    const b = gamesRange(before, grp);
+    const a = gamesRange(after, grp);
+    const bStr = b ? `${b[0]}-${b[1]}` : "none yet";
+    const aStr = a ? `${a[0]}-${a[1]}` : "MISSING";
+    return `  ${grp}: games-played range ${bStr} -> ${aStr}`;
+  });
 }
 
 // ---- Part 2: the frozen prediction snapshot -------------------------------
@@ -380,6 +428,26 @@ function main(): void {
     "refresh depth charts + injuries, rebuild spotlights (team_players.json)"
   );
 
+  // 2026 season-to-date leaderboards (TEAM + QB/RB/WR/TE) — independent of
+  // the matchups/predictions steps (pulls its own fresh PBP via
+  // process_season(2026)/_team_season_metrics(2026)) but grouped here as
+  // another weekly-refresh input, same as depth charts/injuries above. This
+  // is the EXACT command a one-off manual rebuild already used
+  // (build_team_leaderboards_2026() / build_player_leaderboards_2026() in
+  // ingest/build.py) — no new computation, and it never touches
+  // career.json/records.json/any 2015-2025 season file, only
+  // leaderboards/season/2026.json.
+  const leaderboardsBefore = readJson<LeaderboardsDocLite>(LEADERBOARDS_2026_PATH);
+  run(
+    pythonExe(),
+    [path.join(REPO_ROOT, "ingest", "build.py"), "--leaderboards-2026"],
+    "refresh 2026 leaderboards (TEAM + QB/RB/WR/TE season-to-date boards)"
+  );
+  const leaderboardsAfter = readJson<LeaderboardsDocLite>(LEADERBOARDS_2026_PATH);
+  if (!leaderboardsAfter) {
+    throw new Error("leaderboards/season/2026.json missing after `build.py --leaderboards-2026` ran");
+  }
+
   const ratingsDoc = readJson<UnitRatingsDoc>(RATINGS_PATH);
   if (!ratingsDoc) throw new Error("unit_ratings.json missing");
 
@@ -400,6 +468,9 @@ function main(): void {
   console.log("\n=== Odds: lines that changed this run ===");
   const oddsDiff = diffOdds(oddsBefore, oddsAfter);
   console.log(oddsDiff.length ? oddsDiff.join("\n") : "  none");
+
+  console.log("\n=== Leaderboards: games-played range per group (leaderboards/season/2026.json) ===");
+  console.log(diffLeaderboards(leaderboardsBefore, leaderboardsAfter).join("\n"));
 
   console.log(`\n=== Prediction snapshot: week ${week} (${path.relative(REPO_ROOT, predPath)}) ===`);
   console.log(predSummary.join("\n"));
