@@ -633,13 +633,16 @@ is no server-side fetch and no runtime secret.
 {
   "schema_version": 1,
   "season": 2026,
-  "book": "draftkings",              // consistent single source; not a market consensus
+  "book": "draftkings",              // total/favorite/spread source; not a market consensus
   "generated_at": "2026-09-13T06:59:40.672Z",
   "weeks": {
     "1": [
       {
         "game_id": "2026_01_ARI_LAC", "away": "ARI", "home": "LAC",
-        "odds": { "total": 47.5, "favorite": "LAC", "spread": 9.5 }
+        "odds": {
+          "total": 47.5, "favorite": "LAC", "spread": 9.5,
+          "consensusHomeWinProb": 0.3418803418803419, "consensusBookCount": 7
+        }
       },
       {
         "game_id": "2026_01_NE_SEA", "away": "NE", "home": "SEA",
@@ -650,6 +653,19 @@ is no server-side fetch and no runtime secret.
   }
 }
 ```
+
+`consensusHomeWinProb` (added 2026-10, for the /markets page, docs/MARKETS.md) is the
+home team's de-vigged win probability (0-1), **median across every
+bookmaker** that has posted an h2h (moneyline) price for the game — unlike
+`total`/`favorite`/`spread`, which stay DraftKings-only. Each book's own
+two-way vig is removed by proportional normalisation (its two implied
+probabilities, from American odds, scaled to sum to 1) before taking the
+median; a median rather than a mean so one outlier book can't move it much.
+`consensusBookCount` is how many bookmakers had an h2h price feeding that
+median (0 when `consensusHomeWinProb` is null). Both null/0 whenever no
+book has an h2h price yet — same "not posted, never 0" convention as the
+rest of this file. Additive fields, non-breaking: schema_version stays 1,
+and any JSON written before this change simply omits both keys.
 
 Every game in `schedule_2026.json` gets an entry — games are never omitted
 for lack of odds. `odds` is `null` for anything DraftKings hasn't priced yet
@@ -662,8 +678,9 @@ matched between the schedule and the odds feed **by away/home team-code
 pair**, never by date — the feed's `commence_time` is UTC and late-window
 games roll to the next calendar date versus the schedule's local kickoff
 date. Full-name → code mapping for all 32 teams lives in
-`TEAM_NAME_TO_CODE` in `pull_odds.mjs`; an unrecognized name from the feed
-aborts the script rather than silently dropping that game.
+`src/lib/markets/team-codes.json` (shared with the /markets page, docs/MARKETS.md),
+read by `pull_odds.mjs` at `TEAM_NAME_TO_CODE`; an unrecognized name from the
+feed aborts the script rather than silently dropping that game.
 
 ## `matchups/team_players.json` (Matchups product — player spotlights)
 

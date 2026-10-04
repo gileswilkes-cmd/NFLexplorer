@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "tsx --test src/lib/markets/*.test.ts",
     "odds:pull": "node --env-file=.env.local ingest/pull_odds.mjs",
     "refresh:week": "tsx ingest/refresh_week.ts"
   },

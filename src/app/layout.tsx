@@ -34,6 +34,7 @@ export default function RootLayout({
             <a href="/compare" className="text-sm text-ink-secondary hover:text-foreground">Compare</a>
             <a href="/teams" className="text-sm text-ink-secondary hover:text-foreground">Teams</a>
             <a href="/matchups" className="text-sm text-ink-secondary hover:text-foreground">Matchups</a>
+            <a href="/markets" className="text-sm text-ink-secondary hover:text-foreground">Markets</a>
             <a href="/leaderboards" className="text-sm text-ink-secondary hover:text-foreground">Leaderboards</a>
             <a href="/history" className="text-sm text-ink-secondary hover:text-foreground">History</a>
           </div>

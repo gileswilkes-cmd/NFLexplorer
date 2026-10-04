@@ -7,6 +7,14 @@ export interface GameOdds {
   /** team code, or null for a pick'em (spread 0, no favourite either way) */
   favorite: string | null;
   spread: number;
+  /** De-vigged consensus home-win probability (median across every
+   *  bookmaker with an h2h price), 0-1. Null when no book has posted a
+   *  moneyline yet — added for the /markets page (docs/MARKETS.md); older
+   *  odds_2026.json files predating this field simply omit the key, which
+   *  reads the same as null through this optional type. */
+  consensusHomeWinProb?: number | null;
+  /** How many bookmakers fed that median; 0 when consensusHomeWinProb is null. */
+  consensusBookCount?: number;
 }
 
 export interface OddsGame {

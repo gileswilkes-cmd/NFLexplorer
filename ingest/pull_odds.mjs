@@ -20,45 +20,14 @@ const SCHEMA_VERSION = 1;
 const SEASON = 2026;
 const BOOK = "draftkings";
 
-// Verified against a live pull on 2026-09-12 (all 32 names seen or confirmed
-// by the-odds-api's standard naming; see conversation this shipped from).
-// If the feed ever sends a name not in this map, the script aborts rather
-// than silently dropping that game — team-name drift upstream must be caught
+// Shared with src/lib/markets/teams.ts (the /markets page's Polymarket
+// normaliser) — one 32-team map instead of two copies to keep in sync. If
+// the feed ever sends a name not in this map, the script aborts rather than
+// silently dropping that game — team-name drift upstream must be caught
 // here, not discovered later as a missing card on the page.
-const TEAM_NAME_TO_CODE = {
-  "Arizona Cardinals": "ARI",
-  "Atlanta Falcons": "ATL",
-  "Baltimore Ravens": "BAL",
-  "Buffalo Bills": "BUF",
-  "Carolina Panthers": "CAR",
-  "Chicago Bears": "CHI",
-  "Cincinnati Bengals": "CIN",
-  "Cleveland Browns": "CLE",
-  "Dallas Cowboys": "DAL",
-  "Denver Broncos": "DEN",
-  "Detroit Lions": "DET",
-  "Green Bay Packers": "GB",
-  "Houston Texans": "HOU",
-  "Indianapolis Colts": "IND",
-  "Jacksonville Jaguars": "JAX",
-  "Kansas City Chiefs": "KC",
-  "Las Vegas Raiders": "LV",
-  "Los Angeles Chargers": "LAC",
-  "Los Angeles Rams": "LA",
-  "Miami Dolphins": "MIA",
-  "Minnesota Vikings": "MIN",
-  "New England Patriots": "NE",
-  "New Orleans Saints": "NO",
-  "New York Giants": "NYG",
-  "New York Jets": "NYJ",
-  "Philadelphia Eagles": "PHI",
-  "Pittsburgh Steelers": "PIT",
-  "San Francisco 49ers": "SF",
-  "Seattle Seahawks": "SEA",
-  "Tampa Bay Buccaneers": "TB",
-  "Tennessee Titans": "TEN",
-  "Washington Commanders": "WAS",
-};
+const TEAM_NAME_TO_CODE = JSON.parse(
+  readFileSync(path.join(REPO_ROOT, "src/lib/markets/team-codes.json"), "utf-8")
+).teamNameToCode;
 
 function codeFor(teamName) {
   const code = TEAM_NAME_TO_CODE[teamName];
@@ -79,7 +48,7 @@ async function fetchOdds(apiKey) {
   const url = new URL("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/");
   url.searchParams.set("apiKey", apiKey);
   url.searchParams.set("regions", "us");
-  url.searchParams.set("markets", "spreads,totals");
+  url.searchParams.set("markets", "spreads,totals,h2h");
   url.searchParams.set("oddsFormat", "american");
   url.searchParams.set("dateFormat", "iso");
 
@@ -94,8 +63,49 @@ async function fetchOdds(apiKey) {
   return res.json();
 }
 
-/** Extract { total, favorite, spread } from one game's DraftKings markets, or null. */
-function extractOdds(game) {
+/** American odds -> implied win probability (pre-devig, includes the vig). */
+function americanToImpliedProb(price) {
+  return price > 0 ? 100 / (price + 100) : -price / (-price + 100);
+}
+
+/** One bookmaker's two-way vig removed by proportional (multiplicative)
+ * normalisation: scale both implied probabilities so they sum to 1. */
+function devigHomeProb(homePrice, awayPrice) {
+  const pHome = americanToImpliedProb(homePrice);
+  const pAway = americanToImpliedProb(awayPrice);
+  return pHome / (pHome + pAway);
+}
+
+function median(nums) {
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** De-vigged consensus home-win probability across every bookmaker that has
+ * posted a moneyline (h2h) for this game: devig each book individually, then
+ * take the median across books — resistant to one outlier book, unlike a
+ * mean. { prob: null, bookCount: 0 } when no book has h2h priced yet (never
+ * 0 — "not posted" is not the same as "certain to lose"). */
+function consensusHomeWinProb(game, homeCode) {
+  const probs = [];
+  for (const bk of game.bookmakers) {
+    const h2h = bk.markets.find((m) => m.key === "h2h");
+    if (!h2h || h2h.outcomes.length !== 2) continue;
+    const homeOutcome = h2h.outcomes.find((o) => codeFor(o.name) === homeCode);
+    const awayOutcome = h2h.outcomes.find((o) => codeFor(o.name) !== homeCode);
+    if (!homeOutcome || !awayOutcome) continue;
+    probs.push(devigHomeProb(homeOutcome.price, awayOutcome.price));
+  }
+  return { prob: probs.length ? median(probs) : null, bookCount: probs.length };
+}
+
+/** Extract { total, favorite, spread, consensusHomeWinProb, consensusBookCount }
+ * from one game's markets, or null. total/favorite/spread stay
+ * DraftKings-only (the existing single-book convention this file has always
+ * used); the moneyline consensus is the one field that's deliberately
+ * cross-book. */
+function extractOdds(game, homeCode) {
   const dk = game.bookmakers.find((b) => b.key === BOOK);
   if (!dk) return null;
 
@@ -108,8 +118,13 @@ function extractOdds(game) {
   const spread = favoriteOutcome ? Math.abs(favoriteOutcome.point) : 0;
 
   const total = totalsMarket.outcomes[0]?.point ?? null;
+  const consensus = consensusHomeWinProb(game, homeCode);
 
-  return { total, favorite, spread };
+  return {
+    total, favorite, spread,
+    consensusHomeWinProb: consensus.prob,
+    consensusBookCount: consensus.bookCount,
+  };
 }
 
 /** Index the feed by "AWAY@HOME" team-code pair — never by date (UTC rollover
@@ -120,7 +135,7 @@ function indexByCodePair(oddsGames) {
   for (const game of oddsGames) {
     const away = codeFor(game.away_team);
     const home = codeFor(game.home_team);
-    index.set(`${away}@${home}`, extractOdds(game));
+    index.set(`${away}@${home}`, extractOdds(game, home));
   }
   return index;
 }
@@ -136,7 +151,7 @@ async function main() {
   const schedulePath = path.join(REPO_ROOT, "public/data/matchups/schedule_2026.json");
   const schedule = JSON.parse(readFileSync(schedulePath, "utf-8"));
 
-  console.log("Fetching NFL odds (spreads, totals; US region)...");
+  console.log("Fetching NFL odds (spreads, totals, h2h moneyline; US region)...");
   const oddsGames = await fetchOdds(apiKey);
   console.log(`  ${oddsGames.length} games returned by the feed`);
 

@@ -47,3 +47,6 @@ __pycache__/
 *.pyc
 
 .vercel
+
+# markets Stage 1 discovery probe (nfl_markets_page_cc_prompt.md) — raw samples only
+scripts/markets/samples/
